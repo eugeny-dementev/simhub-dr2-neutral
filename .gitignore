@@ -1,0 +1,12 @@
+artifacts/
+backups/
+.cache/
+.vs/
+*.user
+*.suo
+src/bin/
+src/obj/
+tests/bin/
+tests/obj/
+TestResults/
+*.received.*

@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>DR2Neutral.Tests</AssemblyName>
+    <RootNamespace>DR2NeutralPlugin.Tests</RootNamespace>
+    <PlatformTarget>x86</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <SimHubPath Condition="'$(SimHubPath)' == ''">C:\Program Files (x86)\SimHub</SimHubPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
+    <ProjectReference Include="..\src\DR2Neutral.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="GameReaderCommon">
+      <HintPath>$(SimHubPath)\GameReaderCommon.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="SimHub.Plugins">
+      <HintPath>$(SimHubPath)\SimHub.Plugins.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="SimHub.Logging">
+      <HintPath>$(SimHubPath)\SimHub.Logging.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="log4net">
+      <HintPath>$(SimHubPath)\log4net.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="SharpDX">
+      <HintPath>$(SimHubPath)\SharpDX.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="SharpDX.DirectInput">
+      <HintPath>$(SimHubPath)\SharpDX.DirectInput.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="WindowsBase" />
+  </ItemGroup>
+</Project>

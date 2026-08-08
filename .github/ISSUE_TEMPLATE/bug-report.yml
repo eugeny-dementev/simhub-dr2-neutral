@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible plugin, calibration, installer, or compatibility defect.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: checkboxes
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and read the troubleshooting guide.
+          required: true
+        - label: I tested shifting while stationary or nearly stationary.
+          required: true
+        - label: This report contains no private or security-sensitive information.
+          required: true
+  - type: input
+    attributes:
+      label: Plugin version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: SimHub and Windows versions
+      placeholder: SimHub 9.11.22; Windows 11 24H2
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Controller
+      placeholder: Device name and connection type
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction steps
+      description: Include starting gear, input, and whether DiRT Rally 2.0 was foreground.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected and observed result
+      description: Include the plugin's Last result and Input status text.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Relevant log lines
+      description: Paste only relevant [DR2Neutral] lines after removing personal paths.
+      render: text

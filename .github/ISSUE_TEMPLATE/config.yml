@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Installation and troubleshooting
+    url: https://github.com/eugeny-dementev/simhub-dr2-neutral/blob/main/docs/TROUBLESHOOTING.md
+    about: Check common setup and runtime problems before opening a report.
+  - name: Private security report
+    url: https://github.com/eugeny-dementev/simhub-dr2-neutral/security/advisories/new
+    about: Report vulnerabilities privately, not in a public issue.

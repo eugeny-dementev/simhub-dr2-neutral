@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <Platforms>x86</Platforms>
+    <PlatformTarget>x86</PlatformTarget>
+    <OutputType>Library</OutputType>
+    <AssemblyName>DR2Neutral</AssemblyName>
+    <RootNamespace>DR2NeutralPlugin</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <SimHubPath Condition="'$(SimHubPath)' == ''">C:\Program Files (x86)\SimHub</SimHubPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="GameReaderCommon">
+      <HintPath>$(SimHubPath)\GameReaderCommon.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SimHub.Plugins">
+      <HintPath>$(SimHubPath)\SimHub.Plugins.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SimHub.Logging">
+      <HintPath>$(SimHubPath)\SimHub.Logging.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="log4net">
+      <HintPath>$(SimHubPath)\log4net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SharpDX">
+      <HintPath>$(SimHubPath)\SharpDX.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="SharpDX.DirectInput">
+      <HintPath>$(SimHubPath)\SharpDX.DirectInput.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="System.Xaml" />
+    <Reference Include="WindowsBase" />
+  </ItemGroup>
+
+  <Target Name="ValidateSimHubPath" BeforeTargets="ResolveReferences">
+    <Error
+      Condition="!Exists('$(SimHubPath)\SimHub.Plugins.dll')"
+      Text="SimHub.Plugins.dll was not found in '$(SimHubPath)'. Pass /p:SimHubPath=&quot;D:\Your\SimHub&quot;." />
+    <Error
+      Condition="!Exists('$(SimHubPath)\GameReaderCommon.dll')"
+      Text="GameReaderCommon.dll was not found in '$(SimHubPath)'." />
+  </Target>
+</Project>

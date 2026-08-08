@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a focused, safe improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    attributes:
+      label: User problem
+      description: Describe the problem independently of a proposed implementation.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed behavior
+      description: Explain the intended user experience and compatibility impact.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Safety considerations
+      description: Consider motion, input injection, telemetry, focus, timeouts, and failure modes.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives
+      description: What workarounds or alternatives have you tried?
