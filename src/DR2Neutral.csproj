@@ -8,6 +8,9 @@
     <RootNamespace>DR2NeutralPlugin</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <PathMap>$(MSBuildProjectDirectory)=/_/src</PathMap>
+    <DebugType>portable</DebugType>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>

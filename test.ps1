@@ -35,10 +35,20 @@ function Find-DotNetSdk {
 $dotnet = Find-DotNetSdk
 $testProject = Join-Path $PSScriptRoot "tests\DR2Neutral.Tests.csproj"
 
+& $dotnet restore $testProject `
+    --locked-mode `
+    --nologo `
+    --property:SimHubPath="$($SimHubPath.TrimEnd('\'))" `
+    --property:PlatformTarget=x86
+if ($LASTEXITCODE -ne 0) {
+    throw "Test restore failed with exit code $LASTEXITCODE."
+}
+
 & $dotnet build $testProject `
     --configuration Release `
+    --no-restore `
     --nologo `
-    --property:RestoreLockedMode=true `
+    --property:BuildProjectReferences=false `
     --property:SimHubPath="$($SimHubPath.TrimEnd('\'))" `
     --property:PlatformTarget=x86
 if ($LASTEXITCODE -ne 0) {

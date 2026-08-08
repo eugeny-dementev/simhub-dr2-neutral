@@ -146,6 +146,8 @@ foreach ($expected in @(
     '<PlatformTarget>x86</PlatformTarget>',
     '<TreatWarningsAsErrors>true</TreatWarningsAsErrors>',
     '<Deterministic>true</Deterministic>',
+    '<ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>',
+    '<PathMap>$(MSBuildProjectDirectory)=/_/src</PathMap>',
     'Microsoft.NETFramework.ReferenceAssemblies',
     'SharpDX.DirectInput.dll'
 )) {
@@ -172,6 +174,7 @@ Assert-Condition (-not $installer.Contains("PluginManagerSettings.json")) "insta
 Assert-Condition (-not $installer.Contains("KeyboardEmulator")) "installer does not mutate Keyboard Emulator"
 Assert-Condition (-not $installer.Contains("Stop-Process -Force")) "installer never force-kills SimHub"
 Assert-Condition ($uninstaller.Contains("Calibration settings were preserved")) "recoverable uninstall behavior"
+Assert-Condition ((Get-Content -LiteralPath $paths.Packager -Raw).Contains("New-DeterministicZip")) "fixed-order timestamp-normalized release archive"
 
 Assert-Condition ($nuget.Contains("https://api.nuget.org/v3/index.json")) "official NuGet feed"
 Assert-Condition (-not $nuget.Contains('value="tools"')) "source build has no machine-local package feed"
@@ -183,10 +186,10 @@ Assert-Condition ($sdkBootstrap.Contains("D2239182E07A74B5A2B14782F256C63ACB2B41
 Assert-Condition ($sdkBootstrap.Contains("CN=Nicolas Guilbert")) "pinned SimHub Authenticode publisher"
 Assert-Condition ($sdkBootstrap.Contains('$maximumArchiveBytes = 300MB')) "bounded SimHub download"
 Assert-Condition ($ciWorkflow.Contains("permissions:`n  contents: read")) "read-only CI token"
-Assert-Condition ($ciWorkflow.Contains("actions/checkout@11d5960a326750d5838078e36cf38b85af677262")) "immutable checkout action pin"
-Assert-Condition ($ciWorkflow.Contains("actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9")) "immutable setup-dotnet action pin"
+Assert-Condition ($ciWorkflow.Contains("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")) "immutable checkout action pin"
+Assert-Condition ($ciWorkflow.Contains("actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68")) "immutable setup-dotnet action pin"
 Assert-Condition ($releaseWorkflow.Contains("attestations: write")) "release attestation permission"
-Assert-Condition ($releaseWorkflow.Contains("actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a")) "immutable provenance action pin"
+Assert-Condition ($releaseWorkflow.Contains("actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8")) "immutable provenance action pin"
 Assert-Condition ($releaseWorkflow.Contains('tags:')) "tag-only release trigger"
 
 [byte[]]$pluginBytes = [IO.File]::ReadAllBytes($paths.Plugin)

@@ -7,6 +7,68 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 3.0
 
+function New-DeterministicZip {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory.TrimEnd('\'))
+    $destination = [IO.Path]::GetFullPath($DestinationPath)
+    if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
+        throw "Archive source directory was not found: $sourceRoot"
+    }
+    if (Test-Path -LiteralPath $destination) {
+        throw "Archive destination already exists: $destination"
+    }
+
+    $fixedTimestamp = [DateTimeOffset]::new(
+        2000, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
+    $output = [IO.File]::Open(
+        $destination,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::None)
+    try {
+        $archive = [IO.Compression.ZipArchive]::new(
+            $output,
+            [IO.Compression.ZipArchiveMode]::Create,
+            $true)
+        try {
+            $files = Get-ChildItem -LiteralPath $sourceRoot -File -Recurse |
+                Sort-Object { $_.FullName.Substring($sourceRoot.Length + 1) }
+            foreach ($file in $files) {
+                $relativeName = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
+                $entry = $archive.CreateEntry(
+                    $relativeName,
+                    [IO.Compression.CompressionLevel]::Optimal)
+                $entry.LastWriteTime = $fixedTimestamp
+
+                $input = [IO.File]::OpenRead($file.FullName)
+                $entryOutput = $entry.Open()
+                try {
+                    $input.CopyTo($entryOutput)
+                }
+                finally {
+                    $entryOutput.Dispose()
+                    $input.Dispose()
+                }
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+    }
+    finally {
+        $output.Dispose()
+    }
+}
+
 $Version = & (Join-Path $PSScriptRoot "scripts\Test-Version.ps1") -Version $Version
 
 & (Join-Path $PSScriptRoot "test.ps1") -SimHubPath $SimHubPath
@@ -96,7 +158,7 @@ if (Test-Path -LiteralPath $releaseZip -PathType Leaf) {
     Remove-Item -LiteralPath $releaseZip -Force
 }
 
-Compress-Archive -Path (Join-Path $releaseStage "*") -DestinationPath $releaseZip -CompressionLevel Optimal
+New-DeterministicZip -SourceDirectory $releaseStage -DestinationPath $releaseZip
 
 $archiveChecksums = @($releaseZip) | ForEach-Object {
     $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash
