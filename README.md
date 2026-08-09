@@ -30,8 +30,11 @@ N           -> no key pulse
 - Guided three-movement DirectInput calibration inside SimHub.
 - Supports any compatible sequential shifter with three distinct buttons.
 - Fresh telemetry is required and every intermediate shift is confirmed.
+- Neutral pulses are spaced by at least 200 ms to respect DiRT's shift-input
+  acceptance interval, even when telemetry confirms a gear unusually quickly.
 - Keyboard output is restricted to the foreground DiRT Rally 2.0 process.
 - Neutral operations are serialized, cancellable, timeout-bounded, and capped.
+- Structured UTC event logs correlate every input, decision, pulse, and result.
 - One-click, rollback-capable install and recoverable uninstall.
 - Stable SimHub actions and diagnostic properties for advanced profiles.
 
@@ -45,7 +48,7 @@ N           -> no key pulse
   otherwise one movement can cause two shifts.
 - SimHub and DiRT Rally 2.0 running at the same Windows privilege level.
 
-Version 1.0.0 was runtime-tested with SimHub 9.11.13 and is built in CI against
+Version 1.1.1 was runtime-tested with SimHub 9.11.13 and is built in CI against
 the pinned official SimHub 9.11.22 release. The ready-made package needs no .NET
 SDK or development tools.
 
@@ -101,6 +104,20 @@ same physical controls while built-in input is enabled.
 | Property | `DR2Neutral.ControllerName` |
 | Property | `DR2Neutral.CalibrationActive` |
 | Property | `DR2Neutral.CalibrationStatus` |
+
+## Diagnostic event log
+
+SimHub writes plugin events to `SimHub\Logs\SimHub.txt`. Search for
+`[DR2Neutral.Event]`; the remainder of each matching line is a bounded JSON
+object with an ISO-8601 UTC `timestampUtc`, an `event`, and—when an input starts
+an operation—an `operationId` that ties the complete sequence together.
+
+The log records mapped button rising edges, every safety-condition result,
+key-down/key-up injection, telemetry-confirmed gear changes, timeouts,
+rejections, cancellations, failures, and completion. It deliberately does not
+log every 10 ms telemetry poll, so diagnostics cannot flood the hot loop. See
+the [troubleshooting guide](docs/TROUBLESHOOTING.md#collect-a-structured-event-trace)
+for a copy-and-paste trace command.
 
 ## Build and contribute
 

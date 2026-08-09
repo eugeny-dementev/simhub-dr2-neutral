@@ -23,17 +23,43 @@ namespace DR2NeutralPlugin
     [PluginName("DR2 Neutral Selector")]
     public sealed class DR2Neutral : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.1.1";
 
         private const string SettingsKey = "GeneralSettings";
         private const int KeyHoldMs = 35;
         private const int GearChangeTimeoutMs = 1000;
-        private const int PostShiftSettleMs = 40;
+        internal const int MinimumNeutralPulseIntervalMs = 200;
         private const int TelemetryFreshMs = 1500;
         private const int TelemetryPollMs = 10;
         private const int MaxNeutralPulses = 10;
         private const int ShutdownWaitMs = 1000;
         private const int MaximumStatusLength = 240;
+
+        private enum StructuredLogLevel
+        {
+            Info,
+            Warning,
+            Error
+        }
+
+        private struct NeutralConditionSnapshot
+        {
+            public bool DirtForeground;
+            public bool TelemetryIsDirtRally2;
+            public bool GameRunning;
+            public double TelemetryAgeMs;
+            public string CurrentGear;
+            public bool GearKnown;
+            public bool Allowed;
+            public string ReasonCode;
+            public string Reason;
+        }
+
+        private struct GearChangeResult
+        {
+            public bool Changed;
+            public long KeyDownTimestamp;
+        }
 
         private readonly SemaphoreSlim _keyGate = new SemaphoreSlim(1, 1);
         private readonly object _settingsGate = new object();
@@ -58,10 +84,12 @@ namespace DR2NeutralPlugin
 
         private long _lastTelemetryUtcTicks;
         private long _settingsRevision;
+        private long _nextOperationId;
         private int _busy;
         private int _singleShiftPending;
         private int _controllerConnected;
         private int _calibrationActive;
+        private int _structuredLoggingFailureReported;
 
         public PluginManager PluginManager { get; set; }
 
@@ -182,6 +210,15 @@ namespace DR2NeutralPlugin
                 "[DR2Neutral] Loaded v" + PluginVersion +
                 ". Actions: DR2Neutral.GearUp, DR2Neutral.GearDown, " +
                 "DR2Neutral.SelectNeutral");
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "plugin.loaded",
+                LogField("version", PluginVersion),
+                LogField("builtInControllerEnabled", loaded.BuiltInControllerEnabled),
+                LogField("calibrated", loaded.IsCalibrated),
+                LogField("controllerName", loaded.ControllerName),
+                LogField("gearUpKey", FormatVirtualKey(loaded.GearUpVirtualKey)),
+                LogField("gearDownKey", FormatVirtualKey(loaded.GearDownVirtualKey)));
         }
 
         public void DataUpdate(PluginManager pluginManager, ref GameData data)
@@ -223,6 +260,12 @@ namespace DR2NeutralPlugin
             WaitForTask(_inputMonitorTask, ShutdownWaitMs);
             TrySaveSettings(GetSettingsSnapshot());
 
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "plugin.stopped",
+                LogField("busy", Busy),
+                LogField("shiftPending", Volatile.Read(ref _singleShiftPending) != 0),
+                LogField("calibrationActive", CalibrationActive));
             SimHub.Logging.Current.Info("[DR2Neutral] Stopped.");
         }
 
@@ -284,7 +327,10 @@ namespace DR2NeutralPlugin
             if (saved)
             {
                 SetCalibrationStatus("Calibration cleared");
-                _lastResult = "Controller calibration cleared";
+                SetLastResult(
+                    StructuredLogLevel.Info,
+                    "calibration.cleared",
+                    "Controller calibration cleared");
             }
 
             return saved;
@@ -310,6 +356,9 @@ namespace DR2NeutralPlugin
                 Volatile.Write(ref _calibrationActive, 1);
                 Interlocked.Increment(ref _settingsRevision);
                 SetCalibrationStatus("Starting calibration...");
+                LogStructuredEvent(
+                    StructuredLogLevel.Info,
+                    "calibration.started");
 
                 CancellationToken token = _calibrationCancellation.Token;
                 _calibrationTask = RunCalibrationAsync(token);
@@ -324,6 +373,9 @@ namespace DR2NeutralPlugin
                 if (_calibrationCancellation != null &&
                     !_calibrationCancellation.IsCancellationRequested)
                 {
+                    LogStructuredEvent(
+                        StructuredLogLevel.Info,
+                        "calibration.cancel_requested");
                     _calibrationCancellation.Cancel();
                 }
             }
@@ -411,6 +463,37 @@ namespace DR2NeutralPlugin
                 : -1;
         }
 
+        internal static int GetRemainingNeutralPulseDelayMs(
+            long previousKeyDownTimestamp,
+            long currentTimestamp,
+            long stopwatchFrequency)
+        {
+            if (previousKeyDownTimestamp <= 0)
+            {
+                return 0;
+            }
+
+            if (stopwatchFrequency <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    "stopwatchFrequency",
+                    "Stopwatch frequency must be positive.");
+            }
+
+            if (currentTimestamp < previousKeyDownTimestamp)
+            {
+                return MinimumNeutralPulseIntervalMs;
+            }
+
+            double elapsedMs =
+                (currentTimestamp - previousKeyDownTimestamp) * 1000.0 /
+                stopwatchFrequency;
+            double remainingMs = MinimumNeutralPulseIntervalMs - elapsedMs;
+            return remainingMs <= 0
+                ? 0
+                : (int)Math.Ceiling(remainingMs);
+        }
+
         private void AttachPublicPropertiesAndActions()
         {
             this.AttachDelegate("CurrentGear", () => CurrentGear);
@@ -429,16 +512,25 @@ namespace DR2NeutralPlugin
             this.AddAction("GearUp", (a, b) =>
             {
                 DR2NeutralSettings settings = GetSettingsSnapshot();
-                QueueSingleShift((ushort)settings.GearUpVirtualKey, "Gear Up");
+                QueueSingleShift(
+                    (ushort)settings.GearUpVirtualKey,
+                    "Gear Up",
+                    "simhub_action",
+                    NextOperationId());
             });
 
             this.AddAction("GearDown", (a, b) =>
             {
                 DR2NeutralSettings settings = GetSettingsSnapshot();
-                QueueSingleShift((ushort)settings.GearDownVirtualKey, "Gear Down");
+                QueueSingleShift(
+                    (ushort)settings.GearDownVirtualKey,
+                    "Gear Down",
+                    "simhub_action",
+                    NextOperationId());
             });
 
-            this.AddAction("SelectNeutral", (a, b) => QueueNeutralSelection());
+            this.AddAction("SelectNeutral", (a, b) =>
+                QueueNeutralSelection("simhub_action", NextOperationId()));
         }
 
         private async Task RunCalibrationAsync(CancellationToken token)
@@ -454,7 +546,10 @@ namespace DR2NeutralPlugin
                 if (!result.Success)
                 {
                     SetCalibrationStatus(result.Message);
-                    _lastResult = result.Message;
+                    SetLastResult(
+                        StructuredLogLevel.Warning,
+                        "calibration.not_completed",
+                        result.Message);
                     return;
                 }
 
@@ -474,24 +569,43 @@ namespace DR2NeutralPlugin
                 if (!saved)
                 {
                     SetCalibrationStatus("Calibration was not saved: " + error);
-                    _lastResult = "Calibration was not saved: " + error;
+                    SetLastResult(
+                        StructuredLogLevel.Error,
+                        "calibration.save_failed",
+                        "Calibration was not saved: " + error,
+                        LogField("controllerName", result.ControllerName));
                     return;
                 }
 
                 SetCalibrationStatus(
                     "Calibration complete: " + result.ControllerName);
-                _lastResult = "Controller calibration complete";
+                SetLastResult(
+                    StructuredLogLevel.Info,
+                    "calibration.completed",
+                    "Controller calibration complete",
+                    LogField("controllerName", result.ControllerName),
+                    LogField("gearUpButton", result.GearUpButton),
+                    LogField("gearDownButton", result.GearDownButton),
+                    LogField("selectNeutralButton", result.SelectNeutralButton));
             }
             catch (OperationCanceledException)
             {
                 SetCalibrationStatus("Calibration cancelled; previous assignments kept");
-                _lastResult = "Controller calibration cancelled";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "calibration.cancelled",
+                    "Controller calibration cancelled");
             }
             catch (Exception ex)
             {
                 string message = "Calibration failed: " + BoundStatus(ex.Message);
                 SetCalibrationStatus(message);
-                _lastResult = message;
+                SetLastResult(
+                    StructuredLogLevel.Error,
+                    "calibration.failed",
+                    message,
+                    LogField("exceptionType", ex.GetType().FullName),
+                    LogField("exceptionMessage", BoundStatus(ex.Message)));
                 SimHub.Logging.Current.Error("[DR2Neutral] " + message + " " + ex);
             }
             finally
@@ -512,139 +626,347 @@ namespace DR2NeutralPlugin
 
         private void HandleControllerAction(ControllerActionKind action)
         {
+            DR2NeutralSettings settings = GetSettingsSnapshot();
+            long operationId = NextOperationId();
+
             if (action == ControllerActionKind.RejectedSimultaneous)
             {
-                _lastResult = "Controller input ignored: multiple mapped controls pressed together";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "input.rejected_simultaneous",
+                    "Controller input ignored: multiple mapped controls pressed together",
+                    LogField("operationId", operationId),
+                    LogField("source", "built_in_controller"),
+                    LogField("controllerName", settings.ControllerName),
+                    LogField("gearUpButton", settings.GearUpButton),
+                    LogField("gearDownButton", settings.GearDownButton),
+                    LogField("selectNeutralButton", settings.SelectNeutralButton),
+                    LogField("currentGear", NormalizeGear(_currentGear)));
                 return;
             }
 
-            DR2NeutralSettings settings = GetSettingsSnapshot();
+            int buttonIndex = GetMappedButtonIndex(settings, action);
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "input.button_pressed",
+                LogField("operationId", operationId),
+                LogField("source", "built_in_controller"),
+                LogField("controllerName", settings.ControllerName),
+                LogField("logicalAction", GetControllerActionName(action)),
+                LogField("buttonIndex", buttonIndex),
+                LogField("currentGear", NormalizeGear(_currentGear)),
+                LogField("busy", Busy),
+                LogField("shiftPending", Volatile.Read(ref _singleShiftPending) != 0));
+
             switch (action)
             {
                 case ControllerActionKind.GearUp:
-                    QueueSingleShift((ushort)settings.GearUpVirtualKey, "Gear Up");
+                    QueueSingleShift(
+                        (ushort)settings.GearUpVirtualKey,
+                        "Gear Up",
+                        "built_in_controller",
+                        operationId);
                     return;
                 case ControllerActionKind.GearDown:
-                    QueueSingleShift((ushort)settings.GearDownVirtualKey, "Gear Down");
+                    QueueSingleShift(
+                        (ushort)settings.GearDownVirtualKey,
+                        "Gear Down",
+                        "built_in_controller",
+                        operationId);
                     return;
                 case ControllerActionKind.SelectNeutral:
-                    QueueNeutralSelection();
+                    QueueNeutralSelection("built_in_controller", operationId);
                     return;
                 case ControllerActionKind.None:
                     return;
                 default:
-                    _lastResult = "Controller input ignored: unsupported action";
+                    SetLastResult(
+                        StructuredLogLevel.Warning,
+                        "input.unsupported",
+                        "Controller input ignored: unsupported action",
+                        LogField("operationId", operationId),
+                        LogField("source", "built_in_controller"),
+                        LogField("logicalAction", Convert.ToInt32(action, CultureInfo.InvariantCulture)));
                     return;
             }
         }
 
-        private void QueueSingleShift(ushort virtualKey, string label)
+        private void QueueSingleShift(
+            ushort virtualKey,
+            string label,
+            string source,
+            long operationId)
         {
+            string beforeGear = NormalizeGear(_currentGear);
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "shift.requested",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("logicalAction", label),
+                LogField("virtualKey", FormatVirtualKey(virtualKey)),
+                LogField("currentGear", beforeGear));
+
             CancellationTokenSource shutdown = _shutdown;
             if (shutdown == null || shutdown.IsCancellationRequested)
             {
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "shift.rejected",
+                    label + " ignored: plugin is stopping",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "plugin_stopping"));
                 return;
             }
 
-            if (CalibrationActive)
+            bool calibrationActive = CalibrationActive;
+            bool neutralBusy = Busy;
+            bool dirtForeground = ForegroundIsDirtRally2();
+            bool shiftPending = Volatile.Read(ref _singleShiftPending) != 0;
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "shift.conditions_checked",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("calibrationActive", calibrationActive),
+                LogField("neutralBusy", neutralBusy),
+                LogField("dirtForeground", dirtForeground),
+                LogField("shiftPending", shiftPending),
+                LogField("currentGear", beforeGear));
+
+            if (calibrationActive)
             {
-                _lastResult = label + " ignored: calibration active";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "shift.rejected",
+                    label + " ignored: calibration active",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "calibration_active"));
                 return;
             }
 
-            if (Busy)
+            if (neutralBusy)
             {
-                _lastResult = label + " ignored: Neutral sequence active";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "shift.rejected",
+                    label + " ignored: Neutral sequence active",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "neutral_sequence_active"));
                 return;
             }
 
-            if (!ForegroundIsDirtRally2())
+            if (!dirtForeground)
             {
-                _lastResult = label + " ignored: DiRT Rally 2.0 is not foreground";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "shift.rejected",
+                    label + " ignored: DiRT Rally 2.0 is not foreground",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "dirt_not_foreground"));
                 return;
             }
 
             if (Interlocked.CompareExchange(ref _singleShiftPending, 1, 0) != 0)
             {
-                _lastResult = label + " ignored: another shift is in progress";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "shift.rejected",
+                    label + " ignored: another shift is in progress",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "shift_in_progress"));
                 return;
             }
 
             if (Busy || CalibrationActive)
             {
                 Volatile.Write(ref _singleShiftPending, 0);
-                _lastResult = label + " ignored: another operation started";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "shift.rejected",
+                    label + " ignored: another operation started",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "operation_race"));
                 return;
             }
 
             CancellationToken token = shutdown.Token;
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "shift.queued",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("logicalAction", label),
+                LogField("virtualKey", FormatVirtualKey(virtualKey)),
+                LogField("beforeGear", beforeGear));
             Task.Run(async () =>
             {
+                Stopwatch operationTimer = Stopwatch.StartNew();
                 try
                 {
-                    await PulseKeyAsync(virtualKey, token).ConfigureAwait(false);
-                    _lastResult = label + " sent";
+                    await PulseKeyAsync(
+                            virtualKey,
+                            operationId,
+                            source,
+                            label,
+                            1,
+                            beforeGear,
+                            token)
+                        .ConfigureAwait(false);
+                    SetLastResult(
+                        StructuredLogLevel.Info,
+                        "shift.sent",
+                        label + " sent",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("logicalAction", label),
+                        LogField("virtualKey", FormatVirtualKey(virtualKey)),
+                        LogField("beforeGear", beforeGear),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                 }
                 catch (OperationCanceledException)
                 {
-                    _lastResult = label + " cancelled";
+                    SetLastResult(
+                        StructuredLogLevel.Warning,
+                        "shift.cancelled",
+                        label + " cancelled",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                 }
                 catch (Exception ex)
                 {
-                    _lastResult = label + " failed: " + BoundStatus(ex.Message);
+                    SetLastResult(
+                        StructuredLogLevel.Error,
+                        "shift.failed",
+                        label + " failed: " + BoundStatus(ex.Message),
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("exceptionType", ex.GetType().FullName),
+                        LogField("exceptionMessage", BoundStatus(ex.Message)),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                     SimHub.Logging.Current.Error(
                         "[DR2Neutral] " + label + " failed: " + ex);
                 }
                 finally
                 {
                     Volatile.Write(ref _singleShiftPending, 0);
+                    LogStructuredEvent(
+                        StructuredLogLevel.Info,
+                        "shift.operation_released",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                 }
             });
         }
 
-        private void QueueNeutralSelection()
+        private void QueueNeutralSelection(string source, long operationId)
         {
+            string requestedGear = NormalizeGear(_currentGear);
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "neutral.requested",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("currentGear", requestedGear),
+                LogField("busy", Busy),
+                LogField("shiftPending", Volatile.Read(ref _singleShiftPending) != 0),
+                LogField("calibrationActive", CalibrationActive));
+
             CancellationTokenSource shutdown = _shutdown;
             if (shutdown == null || shutdown.IsCancellationRequested)
             {
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "neutral.rejected",
+                    "Neutral ignored: plugin is stopping",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "plugin_stopping"));
                 return;
             }
 
             if (CalibrationActive)
             {
-                _lastResult = "Neutral ignored: calibration active";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "neutral.rejected",
+                    "Neutral ignored: calibration active",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "calibration_active"));
                 return;
             }
 
-            string reason;
-            if (!CanSelectNeutral(out reason))
+            NeutralConditionSnapshot conditions = EvaluateNeutralConditions();
+            LogNeutralConditions(operationId, source, "request", 0, conditions);
+            if (!conditions.Allowed)
             {
-                _lastResult = "Neutral ignored: " + reason;
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "neutral.rejected",
+                    "Neutral ignored: " + conditions.Reason,
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", conditions.ReasonCode),
+                    LogField("currentGear", conditions.CurrentGear),
+                    LogField("telemetryAgeMs", conditions.TelemetryAgeMs));
                 return;
             }
 
             if (NormalizeGear(_currentGear) == "N")
             {
-                _lastResult = "Already Neutral";
+                SetLastResult(
+                    StructuredLogLevel.Info,
+                    "neutral.already_selected",
+                    "Already Neutral",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("currentGear", "N"));
                 return;
             }
 
             if (Volatile.Read(ref _singleShiftPending) != 0)
             {
-                _lastResult = "Neutral ignored: shift action in progress";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "neutral.rejected",
+                    "Neutral ignored: shift action in progress",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "shift_in_progress"));
                 return;
             }
 
             if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0)
             {
-                _lastResult = "Neutral ignored: sequence already active";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "neutral.rejected",
+                    "Neutral ignored: sequence already active",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "sequence_already_active"));
                 return;
             }
 
             if (Volatile.Read(ref _singleShiftPending) != 0 || CalibrationActive)
             {
                 Volatile.Write(ref _busy, 0);
-                _lastResult = "Neutral ignored: another operation started";
+                SetLastResult(
+                    StructuredLogLevel.Warning,
+                    "neutral.rejected",
+                    "Neutral ignored: another operation started",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("reason", "operation_race"));
                 return;
             }
 
@@ -652,27 +974,65 @@ namespace DR2NeutralPlugin
             ushort gearUpKey = (ushort)settings.GearUpVirtualKey;
             ushort gearDownKey = (ushort)settings.GearDownVirtualKey;
             CancellationToken token = shutdown.Token;
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "neutral.queued",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("startGear", requestedGear),
+                LogField("gearUpKey", FormatVirtualKey(gearUpKey)),
+                LogField("gearDownKey", FormatVirtualKey(gearDownKey)));
 
             _neutralTask = Task.Run(async () =>
             {
+                Stopwatch operationTimer = Stopwatch.StartNew();
                 try
                 {
-                    await SelectNeutralAsync(gearUpKey, gearDownKey, token)
+                    await SelectNeutralAsync(
+                            gearUpKey,
+                            gearDownKey,
+                            source,
+                            operationId,
+                            operationTimer,
+                            token)
                         .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
-                    _lastResult = "Neutral sequence cancelled";
+                    SetLastResult(
+                        StructuredLogLevel.Warning,
+                        "neutral.cancelled",
+                        "Neutral sequence cancelled",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("currentGear", NormalizeGear(_currentGear)),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                 }
                 catch (Exception ex)
                 {
-                    _lastResult = "Neutral failed: " + BoundStatus(ex.Message);
+                    SetLastResult(
+                        StructuredLogLevel.Error,
+                        "neutral.failed",
+                        "Neutral failed: " + BoundStatus(ex.Message),
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("exceptionType", ex.GetType().FullName),
+                        LogField("exceptionMessage", BoundStatus(ex.Message)),
+                        LogField("currentGear", NormalizeGear(_currentGear)),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                     SimHub.Logging.Current.Error(
                         "[DR2Neutral] Neutral sequence failed: " + ex);
                 }
                 finally
                 {
                     Volatile.Write(ref _busy, 0);
+                    LogStructuredEvent(
+                        StructuredLogLevel.Info,
+                        "neutral.operation_released",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("currentGear", NormalizeGear(_currentGear)),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                 }
             });
         }
@@ -680,19 +1040,41 @@ namespace DR2NeutralPlugin
         private async Task SelectNeutralAsync(
             ushort gearUpVirtualKey,
             ushort gearDownVirtualKey,
+            string source,
+            long operationId,
+            Stopwatch operationTimer,
             CancellationToken token)
         {
             string startGear = NormalizeGear(_currentGear);
-            _lastResult = "Selecting Neutral from " + startGear;
+            SetLastResult(
+                StructuredLogLevel.Info,
+                "neutral.started",
+                "Selecting Neutral from " + startGear,
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("startGear", startGear),
+                LogField("gearUpKey", FormatVirtualKey(gearUpVirtualKey)),
+                LogField("gearDownKey", FormatVirtualKey(gearDownVirtualKey)));
 
             for (int pulse = 1; pulse <= MaxNeutralPulses; pulse++)
             {
                 token.ThrowIfCancellationRequested();
 
-                string reason;
-                if (!CanSelectNeutral(out reason))
+                NeutralConditionSnapshot conditions = EvaluateNeutralConditions();
+                LogNeutralConditions(operationId, source, "before_pulse", pulse, conditions);
+                if (!conditions.Allowed)
                 {
-                    _lastResult = "Neutral aborted: " + reason;
+                    SetLastResult(
+                        StructuredLogLevel.Warning,
+                        "neutral.aborted",
+                        "Neutral aborted: " + conditions.Reason,
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("pulse", pulse),
+                        LogField("reason", conditions.ReasonCode),
+                        LogField("currentGear", conditions.CurrentGear),
+                        LogField("telemetryAgeMs", conditions.TelemetryAgeMs),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                     return;
                 }
 
@@ -702,84 +1084,348 @@ namespace DR2NeutralPlugin
                     gearUpVirtualKey,
                     gearDownVirtualKey);
 
+                LogStructuredEvent(
+                    StructuredLogLevel.Info,
+                    "neutral.route_selected",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("pulse", pulse),
+                    LogField("beforeGear", before),
+                    LogField("virtualKey", key > 0 ? FormatVirtualKey(key) : "none"),
+                    LogField("route", key == 0 ? "already_neutral" : key < 0 ? "unsupported" : "shift"));
+
                 if (key == 0)
                 {
-                    _lastResult = "Neutral selected from " + startGear +
-                                  " using " + (pulse - 1) + " pulse(s)";
+                    SetLastResult(
+                        StructuredLogLevel.Info,
+                        "neutral.succeeded",
+                        "Neutral selected from " + startGear +
+                        " using " + (pulse - 1) + " pulse(s)",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("startGear", startGear),
+                        LogField("currentGear", before),
+                        LogField("pulsesSent", pulse - 1),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                     return;
                 }
 
                 if (key < 0)
                 {
-                    _lastResult = "Neutral aborted: unsupported gear '" + before + "'";
+                    SetLastResult(
+                        StructuredLogLevel.Warning,
+                        "neutral.aborted",
+                        "Neutral aborted: unsupported gear '" + before + "'",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("pulse", pulse),
+                        LogField("reason", "unsupported_gear"),
+                        LogField("currentGear", before),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                     return;
                 }
 
-                bool changed = await PulseAndWaitForGearChangeAsync(
+                GearChangeResult change = await PulseAndWaitForGearChangeAsync(
                         (ushort)key,
                         before,
+                        source,
+                        operationId,
+                        pulse,
                         token)
                     .ConfigureAwait(false);
 
-                if (!changed)
+                if (!change.Changed)
                 {
-                    _lastResult = "Neutral aborted: gear stayed at " + before +
-                                  " for " + GearChangeTimeoutMs + " ms";
+                    SetLastResult(
+                        StructuredLogLevel.Warning,
+                        "neutral.aborted",
+                        "Neutral aborted: gear stayed at " + before +
+                        " for " + GearChangeTimeoutMs + " ms",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("pulse", pulse),
+                        LogField("reason", "gear_change_unconfirmed"),
+                        LogField("beforeGear", before),
+                        LogField("currentGear", NormalizeGear(_currentGear)),
+                        LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
                     return;
                 }
 
-                await Task.Delay(PostShiftSettleMs, token).ConfigureAwait(false);
+                if (!string.Equals(
+                        NormalizeGear(_currentGear),
+                        "N",
+                        StringComparison.Ordinal))
+                {
+                    await WaitForNeutralPulseIntervalAsync(
+                            change.KeyDownTimestamp,
+                            source,
+                            operationId,
+                            pulse,
+                            token)
+                        .ConfigureAwait(false);
+                }
             }
 
-            _lastResult = "Neutral aborted: exceeded " +
-                          MaxNeutralPulses + " shift pulses";
+            SetLastResult(
+                StructuredLogLevel.Warning,
+                "neutral.aborted",
+                "Neutral aborted: exceeded " + MaxNeutralPulses + " shift pulses",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("reason", "pulse_limit_exceeded"),
+                LogField("pulseLimit", MaxNeutralPulses),
+                LogField("currentGear", NormalizeGear(_currentGear)),
+                LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
         }
 
-        private async Task<bool> PulseAndWaitForGearChangeAsync(
+        private async Task<GearChangeResult> PulseAndWaitForGearChangeAsync(
             ushort virtualKey,
             string before,
+            string source,
+            long operationId,
+            int pulseNumber,
             CancellationToken token)
         {
-            await PulseKeyAsync(virtualKey, token).ConfigureAwait(false);
+            long keyDownTimestamp = await PulseKeyAsync(
+                    virtualKey,
+                    operationId,
+                    source,
+                    "Select Neutral",
+                    pulseNumber,
+                    before,
+                    token)
+                .ConfigureAwait(false);
 
             Stopwatch timeout = Stopwatch.StartNew();
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "gear_change.wait_started",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("pulse", pulseNumber),
+                LogField("beforeGear", before),
+                LogField("timeoutMs", GearChangeTimeoutMs),
+                LogField("telemetryAgeMs", GetTelemetryAgeMs()));
+
             while (timeout.ElapsedMilliseconds < GearChangeTimeoutMs)
             {
                 token.ThrowIfCancellationRequested();
 
                 if (!ForegroundIsDirtRally2())
                 {
-                    return false;
+                    LogStructuredEvent(
+                        StructuredLogLevel.Warning,
+                        "gear_change.focus_lost",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("pulse", pulseNumber),
+                        LogField("beforeGear", before),
+                        LogField("currentGear", NormalizeGear(_currentGear)),
+                        LogField("elapsedMs", timeout.Elapsed.TotalMilliseconds));
+                    return new GearChangeResult
+                    {
+                        Changed = false,
+                        KeyDownTimestamp = keyDownTimestamp
+                    };
                 }
 
                 string now = NormalizeGear(_currentGear);
                 if (IsKnownGear(now) &&
                     !string.Equals(now, before, StringComparison.Ordinal))
                 {
-                    return true;
+                    LogStructuredEvent(
+                        StructuredLogLevel.Info,
+                        "gear_change.confirmed",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("pulse", pulseNumber),
+                        LogField("beforeGear", before),
+                        LogField("afterGear", now),
+                        LogField("elapsedMs", timeout.Elapsed.TotalMilliseconds),
+                        LogField("telemetryAgeMs", GetTelemetryAgeMs()));
+                    return new GearChangeResult
+                    {
+                        Changed = true,
+                        KeyDownTimestamp = keyDownTimestamp
+                    };
                 }
 
                 await Task.Delay(TelemetryPollMs, token).ConfigureAwait(false);
             }
 
-            return false;
+            LogStructuredEvent(
+                StructuredLogLevel.Warning,
+                "gear_change.timeout",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("pulse", pulseNumber),
+                LogField("beforeGear", before),
+                LogField("currentGear", NormalizeGear(_currentGear)),
+                LogField("elapsedMs", timeout.Elapsed.TotalMilliseconds),
+                LogField("telemetryAgeMs", GetTelemetryAgeMs()));
+            return new GearChangeResult
+            {
+                Changed = false,
+                KeyDownTimestamp = keyDownTimestamp
+            };
         }
 
-        private async Task PulseKeyAsync(ushort virtualKey, CancellationToken token)
+        private async Task WaitForNeutralPulseIntervalAsync(
+            long previousKeyDownTimestamp,
+            string source,
+            long operationId,
+            int completedPulseNumber,
+            CancellationToken token)
         {
+            long intervalCheckTimestamp = Stopwatch.GetTimestamp();
+            int delayMs = GetRemainingNeutralPulseDelayMs(
+                previousKeyDownTimestamp,
+                intervalCheckTimestamp,
+                Stopwatch.Frequency);
+            double elapsedSinceKeyDownMs = GetStopwatchElapsedMs(
+                previousKeyDownTimestamp,
+                intervalCheckTimestamp);
+
+            if (delayMs == 0)
+            {
+                LogStructuredEvent(
+                    StructuredLogLevel.Info,
+                    "neutral.inter_pulse_interval_satisfied",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("completedPulse", completedPulseNumber),
+                    LogField("minimumIntervalMs", MinimumNeutralPulseIntervalMs),
+                    LogField("elapsedSinceKeyDownMs", elapsedSinceKeyDownMs),
+                    LogField("currentGear", NormalizeGear(_currentGear)));
+                return;
+            }
+
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "neutral.inter_pulse_wait_started",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("completedPulse", completedPulseNumber),
+                LogField("minimumIntervalMs", MinimumNeutralPulseIntervalMs),
+                LogField("elapsedSinceKeyDownMs", elapsedSinceKeyDownMs),
+                LogField("delayMs", delayMs),
+                LogField("currentGear", NormalizeGear(_currentGear)));
+
+            Stopwatch waitTimer = Stopwatch.StartNew();
+            await Task.Delay(delayMs, token).ConfigureAwait(false);
+            double actualIntervalMs = GetStopwatchElapsedMs(
+                previousKeyDownTimestamp,
+                Stopwatch.GetTimestamp());
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "neutral.inter_pulse_wait_completed",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("completedPulse", completedPulseNumber),
+                LogField("minimumIntervalMs", MinimumNeutralPulseIntervalMs),
+                LogField("requestedDelayMs", delayMs),
+                LogField("waitElapsedMs", waitTimer.Elapsed.TotalMilliseconds),
+                LogField("actualIntervalMs", actualIntervalMs),
+                LogField("currentGear", NormalizeGear(_currentGear)));
+        }
+
+        private static double GetStopwatchElapsedMs(
+            long startTimestamp,
+            long endTimestamp)
+        {
+            if (startTimestamp <= 0 || endTimestamp <= startTimestamp)
+            {
+                return 0;
+            }
+
+            return (endTimestamp - startTimestamp) * 1000.0 /
+                   Stopwatch.Frequency;
+        }
+
+        private async Task<long> PulseKeyAsync(
+            ushort virtualKey,
+            long operationId,
+            string source,
+            string logicalAction,
+            int pulseNumber,
+            string beforeGear,
+            CancellationToken token)
+        {
+            Stopwatch gateTimer = Stopwatch.StartNew();
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "pulse.key_gate_wait_started",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("logicalAction", logicalAction),
+                LogField("pulse", pulseNumber),
+                LogField("virtualKey", FormatVirtualKey(virtualKey)));
             await _keyGate.WaitAsync(token).ConfigureAwait(false);
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "pulse.key_gate_acquired",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("logicalAction", logicalAction),
+                LogField("pulse", pulseNumber),
+                LogField("virtualKey", FormatVirtualKey(virtualKey)),
+                LogField("waitElapsedMs", gateTimer.Elapsed.TotalMilliseconds));
+
             bool keyIsDown = false;
+            long keyDownTimestamp = 0;
+            Stopwatch holdTimer = null;
 
             try
             {
-                if (!ForegroundIsDirtRally2())
+                bool dirtForeground = ForegroundIsDirtRally2();
+                LogStructuredEvent(
+                    dirtForeground ? StructuredLogLevel.Info : StructuredLogLevel.Warning,
+                    "pulse.foreground_checked",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("logicalAction", logicalAction),
+                    LogField("pulse", pulseNumber),
+                    LogField("dirtForeground", dirtForeground),
+                    LogField("currentGear", NormalizeGear(_currentGear)));
+
+                if (!dirtForeground)
                 {
                     throw new InvalidOperationException(
                         "DiRT Rally 2.0 lost foreground focus before key injection.");
                 }
 
-                SendKeyState(virtualKey, false);
+                try
+                {
+                    SendKeyState(virtualKey, false);
+                }
+                catch (Exception ex)
+                {
+                    LogStructuredEvent(
+                        StructuredLogLevel.Error,
+                        "pulse.key_down_failed",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("logicalAction", logicalAction),
+                        LogField("pulse", pulseNumber),
+                        LogField("virtualKey", FormatVirtualKey(virtualKey)),
+                        LogField("exceptionType", ex.GetType().FullName),
+                        LogField("exceptionMessage", BoundStatus(ex.Message)));
+                    throw;
+                }
+
                 keyIsDown = true;
+                keyDownTimestamp = Stopwatch.GetTimestamp();
+                holdTimer = Stopwatch.StartNew();
+                LogStructuredEvent(
+                    StructuredLogLevel.Info,
+                    "pulse.key_down_sent",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("logicalAction", logicalAction),
+                    LogField("pulse", pulseNumber),
+                    LogField("virtualKey", FormatVirtualKey(virtualKey)),
+                    LogField("virtualKeyCode", virtualKey),
+                    LogField("beforeGear", beforeGear));
                 await Task.Delay(KeyHoldMs, token).ConfigureAwait(false);
             }
             finally
@@ -788,54 +1434,137 @@ namespace DR2NeutralPlugin
                 {
                     if (keyIsDown)
                     {
-                        SendKeyState(virtualKey, true);
+                        try
+                        {
+                            SendKeyState(virtualKey, true);
+                            LogStructuredEvent(
+                                StructuredLogLevel.Info,
+                                "pulse.key_up_sent",
+                                LogField("operationId", operationId),
+                                LogField("source", source),
+                                LogField("logicalAction", logicalAction),
+                                LogField("pulse", pulseNumber),
+                                LogField("virtualKey", FormatVirtualKey(virtualKey)),
+                                LogField("virtualKeyCode", virtualKey),
+                                LogField(
+                                    "holdElapsedMs",
+                                    holdTimer == null
+                                        ? 0
+                                        : holdTimer.Elapsed.TotalMilliseconds));
+                        }
+                        catch (Exception ex)
+                        {
+                            LogStructuredEvent(
+                                StructuredLogLevel.Error,
+                                "pulse.key_up_failed",
+                                LogField("operationId", operationId),
+                                LogField("source", source),
+                                LogField("logicalAction", logicalAction),
+                                LogField("pulse", pulseNumber),
+                                LogField("virtualKey", FormatVirtualKey(virtualKey)),
+                                LogField("exceptionType", ex.GetType().FullName),
+                                LogField("exceptionMessage", BoundStatus(ex.Message)));
+                            throw;
+                        }
                     }
                 }
                 finally
                 {
                     _keyGate.Release();
+                    LogStructuredEvent(
+                        StructuredLogLevel.Info,
+                        "pulse.key_gate_released",
+                        LogField("operationId", operationId),
+                        LogField("source", source),
+                        LogField("logicalAction", logicalAction),
+                        LogField("pulse", pulseNumber),
+                        LogField("virtualKey", FormatVirtualKey(virtualKey)),
+                        LogField("totalElapsedMs", gateTimer.Elapsed.TotalMilliseconds));
                 }
             }
+
+            return keyDownTimestamp;
         }
 
-        private bool CanSelectNeutral(out string reason)
+        private NeutralConditionSnapshot EvaluateNeutralConditions()
         {
-            if (!ForegroundIsDirtRally2())
+            NeutralConditionSnapshot conditions = new NeutralConditionSnapshot
             {
-                reason = "DiRT Rally 2.0 is not foreground";
-                return false;
+                DirtForeground = ForegroundIsDirtRally2(),
+                TelemetryIsDirtRally2 = _telemetryIsDirtRally2,
+                GameRunning = _gameRunning,
+                TelemetryAgeMs = GetTelemetryAgeMs(),
+                CurrentGear = NormalizeGear(_currentGear)
+            };
+            conditions.GearKnown = IsKnownGear(conditions.CurrentGear);
+
+            if (!conditions.DirtForeground)
+            {
+                conditions.ReasonCode = "dirt_not_foreground";
+                conditions.Reason = "DiRT Rally 2.0 is not foreground";
+            }
+            else if (!conditions.TelemetryIsDirtRally2)
+            {
+                conditions.ReasonCode = "telemetry_source_mismatch";
+                conditions.Reason = "SimHub is not receiving DiRT Rally 2.0 telemetry";
+            }
+            else if (!conditions.GameRunning)
+            {
+                conditions.ReasonCode = "game_telemetry_not_running";
+                conditions.Reason = "game telemetry is not running";
+            }
+            else if (conditions.TelemetryAgeMs < 0 ||
+                     conditions.TelemetryAgeMs > TelemetryFreshMs)
+            {
+                conditions.ReasonCode = "telemetry_stale";
+                conditions.Reason = "telemetry is stale (" +
+                                    Math.Round(conditions.TelemetryAgeMs, 0)
+                                        .ToString(CultureInfo.InvariantCulture) +
+                                    " ms)";
+            }
+            else if (!conditions.GearKnown)
+            {
+                conditions.ReasonCode = "current_gear_unavailable";
+                conditions.Reason =
+                    "current gear is unavailable ('" + conditions.CurrentGear + "')";
+            }
+            else
+            {
+                conditions.Allowed = true;
+                conditions.ReasonCode = "allowed";
+                conditions.Reason = "";
             }
 
-            if (!_telemetryIsDirtRally2)
-            {
-                reason = "SimHub is not receiving DiRT Rally 2.0 telemetry";
-                return false;
-            }
+            return conditions;
+        }
 
-            if (!_gameRunning)
-            {
-                reason = "game telemetry is not running";
-                return false;
-            }
-
-            double age = GetTelemetryAgeMs();
-            if (age < 0 || age > TelemetryFreshMs)
-            {
-                reason = "telemetry is stale (" +
-                         Math.Round(age, 0).ToString(CultureInfo.InvariantCulture) +
-                         " ms)";
-                return false;
-            }
-
-            string gear = NormalizeGear(_currentGear);
-            if (!IsKnownGear(gear))
-            {
-                reason = "current gear is unavailable ('" + gear + "')";
-                return false;
-            }
-
-            reason = "";
-            return true;
+        private void LogNeutralConditions(
+            long operationId,
+            string source,
+            string phase,
+            int pulseNumber,
+            NeutralConditionSnapshot conditions)
+        {
+            LogStructuredEvent(
+                conditions.Allowed
+                    ? StructuredLogLevel.Info
+                    : StructuredLogLevel.Warning,
+                "neutral.conditions_checked",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("phase", phase),
+                LogField("pulse", pulseNumber),
+                LogField("dirtForeground", conditions.DirtForeground),
+                LogField("telemetryIsDirtRally2", conditions.TelemetryIsDirtRally2),
+                LogField("gameRunning", conditions.GameRunning),
+                LogField("telemetryAgeMs", conditions.TelemetryAgeMs),
+                LogField("currentGear", conditions.CurrentGear),
+                LogField("gearKnown", conditions.GearKnown),
+                LogField("allowed", conditions.Allowed),
+                LogField("reason", conditions.ReasonCode),
+                LogField("busy", Busy),
+                LogField("shiftPending", Volatile.Read(ref _singleShiftPending) != 0),
+                LogField("calibrationActive", CalibrationActive));
         }
 
         private bool IsTelemetryReady()
@@ -935,6 +1664,11 @@ namespace DR2NeutralPlugin
             {
                 SimHub.Logging.Current.Error(
                     "[DR2Neutral] Settings save failed: " + ex);
+                LogStructuredEvent(
+                    StructuredLogLevel.Error,
+                    "settings.save_failed",
+                    LogField("exceptionType", ex.GetType().FullName),
+                    LogField("exceptionMessage", BoundStatus(ex.Message)));
             }
         }
 
@@ -948,12 +1682,144 @@ namespace DR2NeutralPlugin
             if (!string.Equals(previous, bounded, StringComparison.Ordinal))
             {
                 SimHub.Logging.Current.Info("[DR2Neutral] Input: " + bounded);
+                LogStructuredEvent(
+                    StructuredLogLevel.Info,
+                    "input.status_changed",
+                    LogField("previousStatus", previous),
+                    LogField("status", bounded),
+                    LogField("connected", connected));
             }
         }
 
         private void SetCalibrationStatus(string status)
         {
-            _calibrationStatus = BoundStatus(status);
+            string bounded = BoundStatus(status);
+            string previous = _calibrationStatus;
+            _calibrationStatus = bounded;
+
+            if (!string.Equals(previous, bounded, StringComparison.Ordinal))
+            {
+                LogStructuredEvent(
+                    StructuredLogLevel.Info,
+                    "calibration.status_changed",
+                    LogField("previousStatus", previous),
+                    LogField("status", bounded),
+                    LogField("active", CalibrationActive));
+            }
+        }
+
+        private long NextOperationId()
+        {
+            return Interlocked.Increment(ref _nextOperationId);
+        }
+
+        private static StructuredLogField LogField(string name, object value)
+        {
+            return StructuredEventFormatter.Field(name, value);
+        }
+
+        private void SetLastResult(
+            StructuredLogLevel level,
+            string eventName,
+            string result,
+            params StructuredLogField[] fields)
+        {
+            string boundedResult = BoundStatus(result);
+            _lastResult = boundedResult;
+
+            int existingCount = fields == null ? 0 : fields.Length;
+            StructuredLogField[] eventFields =
+                new StructuredLogField[existingCount + 1];
+            if (existingCount > 0)
+            {
+                Array.Copy(fields, eventFields, existingCount);
+            }
+
+            eventFields[existingCount] = LogField("result", boundedResult);
+            LogStructuredEvent(level, eventName, eventFields);
+        }
+
+        private void LogStructuredEvent(
+            StructuredLogLevel level,
+            string eventName,
+            params StructuredLogField[] fields)
+        {
+            try
+            {
+                string message = "[DR2Neutral.Event] " +
+                                 StructuredEventFormatter.Format(
+                                     DateTime.UtcNow,
+                                     eventName,
+                                     fields);
+
+                switch (level)
+                {
+                    case StructuredLogLevel.Warning:
+                        SimHub.Logging.Current.Warn(message);
+                        break;
+                    case StructuredLogLevel.Error:
+                        SimHub.Logging.Current.Error(message);
+                        break;
+                    default:
+                        SimHub.Logging.Current.Info(message);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (Interlocked.Exchange(
+                        ref _structuredLoggingFailureReported,
+                        1) == 0)
+                {
+                    try
+                    {
+                        SimHub.Logging.Current.Error(
+                            "[DR2Neutral] Structured event logging failed; " +
+                            "further logger errors are suppressed: " +
+                            BoundStatus(ex.Message));
+                    }
+                    catch
+                    {
+                        // Logging must never interfere with controller input or key-up safety.
+                    }
+                }
+            }
+        }
+
+        private static int GetMappedButtonIndex(
+            DR2NeutralSettings settings,
+            ControllerActionKind action)
+        {
+            switch (action)
+            {
+                case ControllerActionKind.GearUp:
+                    return settings.GearUpButton;
+                case ControllerActionKind.GearDown:
+                    return settings.GearDownButton;
+                case ControllerActionKind.SelectNeutral:
+                    return settings.SelectNeutralButton;
+                default:
+                    return DR2NeutralSettings.UnassignedButton;
+            }
+        }
+
+        private static string GetControllerActionName(ControllerActionKind action)
+        {
+            switch (action)
+            {
+                case ControllerActionKind.GearUp:
+                    return "gear_up";
+                case ControllerActionKind.GearDown:
+                    return "gear_down";
+                case ControllerActionKind.SelectNeutral:
+                    return "select_neutral";
+                case ControllerActionKind.RejectedSimultaneous:
+                    return "rejected_simultaneous";
+                case ControllerActionKind.None:
+                    return "none";
+                default:
+                    return "unsupported";
+            }
         }
 
         private static string BoundStatus(string status)
