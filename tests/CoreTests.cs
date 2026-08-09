@@ -18,6 +18,7 @@ namespace DR2NeutralPlugin.Tests
                 TestMappedButtonEdges();
                 TestGearNormalizationAndNeutralRouting();
                 TestGameDetection();
+                TestNeutralPulseInterval();
                 TestStructuredEventFormatting();
                 TestSettingsUiConstruction();
                 TestAssemblyMetadata();
@@ -126,6 +127,72 @@ namespace DR2NeutralPlugin.Tests
             False(DR2Neutral.LooksLikeDirtRally2(""), "empty game rejection");
         }
 
+        private static void TestNeutralPulseInterval()
+        {
+            const long frequency = 1000;
+            const long firstKeyDown = 1000;
+
+            Equal(
+                0,
+                DR2Neutral.GetRemainingNeutralPulseDelayMs(0, firstKeyDown, frequency),
+                "first Neutral pulse is not delayed");
+            Equal(
+                200,
+                DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                    firstKeyDown,
+                    firstKeyDown,
+                    frequency),
+                "full interval remains immediately after key-down");
+            Equal(
+                150,
+                DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                    firstKeyDown,
+                    firstKeyDown + 50,
+                    frequency),
+                "partial interval is calculated exactly");
+            Equal(
+                85,
+                DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                    firstKeyDown,
+                    firstKeyDown + 115,
+                    frequency),
+                "observed rejected timing is extended to the safe interval");
+            Equal(
+                1,
+                DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                    firstKeyDown,
+                    firstKeyDown + 199,
+                    frequency),
+                "sub-millisecond remainder rounds up safely");
+            Equal(
+                0,
+                DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                    firstKeyDown,
+                    firstKeyDown + 200,
+                    frequency),
+                "exact minimum interval needs no delay");
+            Equal(
+                0,
+                DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                    firstKeyDown,
+                    firstKeyDown + 240,
+                    frequency),
+                "slow telemetry confirmation adds no redundant delay");
+            Equal(
+                DR2Neutral.MinimumNeutralPulseIntervalMs,
+                DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                    firstKeyDown,
+                    firstKeyDown - 1,
+                    frequency),
+                "backward stopwatch anomaly uses the bounded full delay");
+            Throws<ArgumentOutOfRangeException>(
+                () => DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                    firstKeyDown,
+                    firstKeyDown,
+                    0),
+                "invalid stopwatch frequency is rejected");
+        }
+
         private static void TestStructuredEventFormatting()
         {
             DateTime timestamp = new DateTime(
@@ -197,7 +264,7 @@ namespace DR2NeutralPlugin.Tests
         private static void TestAssemblyMetadata()
         {
             Assembly assembly = typeof(DR2Neutral).Assembly;
-            Equal(new Version(1, 1, 0, 0), assembly.GetName().Version, "assembly version");
+            Equal(new Version(1, 1, 1, 0), assembly.GetName().Version, "assembly version");
             Equal("DR2Neutral", assembly.GetName().Name, "assembly name");
             True(typeof(SimHub.Plugins.IWPFSettingsV2).IsAssignableFrom(typeof(DR2Neutral)), "settings interface");
         }

@@ -31,6 +31,12 @@ that case: `neutral.conditions_checked` has `"allowed":true`,
 `pulse.key_down_sent` and `pulse.key_up_sent` appear, and then
 `gear_change.timeout` reports that telemetry never changed.
 
+Version 1.1.1 and newer also enforce at least 200 ms between Neutral key-down
+pulses. The trace records `neutral.inter_pulse_wait_started` and
+`neutral.inter_pulse_wait_completed`, including the requested delay and actual
+key-down interval. This prevents fast telemetry confirmation from making the
+next pulse arrive inside DiRT's input cooldown.
+
 ## Collect a structured event trace
 
 Reproduce the problem once, exit the game when convenient, then run:

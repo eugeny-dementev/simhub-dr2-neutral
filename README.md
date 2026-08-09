@@ -30,6 +30,8 @@ N           -> no key pulse
 - Guided three-movement DirectInput calibration inside SimHub.
 - Supports any compatible sequential shifter with three distinct buttons.
 - Fresh telemetry is required and every intermediate shift is confirmed.
+- Neutral pulses are spaced by at least 200 ms to respect DiRT's shift-input
+  acceptance interval, even when telemetry confirms a gear unusually quickly.
 - Keyboard output is restricted to the foreground DiRT Rally 2.0 process.
 - Neutral operations are serialized, cancellable, timeout-bounded, and capped.
 - Structured UTC event logs correlate every input, decision, pulse, and result.
@@ -46,7 +48,7 @@ N           -> no key pulse
   otherwise one movement can cause two shifts.
 - SimHub and DiRT Rally 2.0 running at the same Windows privilege level.
 
-Version 1.1.0 was runtime-tested with SimHub 9.11.13 and is built in CI against
+Version 1.1.1 was runtime-tested with SimHub 9.11.13 and is built in CI against
 the pinned official SimHub 9.11.22 release. The ready-made package needs no .NET
 SDK or development tools.
 

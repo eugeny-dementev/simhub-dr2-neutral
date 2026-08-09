@@ -23,12 +23,12 @@ namespace DR2NeutralPlugin
     [PluginName("DR2 Neutral Selector")]
     public sealed class DR2Neutral : IPlugin, IDataPlugin, IWPFSettingsV2
     {
-        public const string PluginVersion = "1.1.0";
+        public const string PluginVersion = "1.1.1";
 
         private const string SettingsKey = "GeneralSettings";
         private const int KeyHoldMs = 35;
         private const int GearChangeTimeoutMs = 1000;
-        private const int PostShiftSettleMs = 40;
+        internal const int MinimumNeutralPulseIntervalMs = 200;
         private const int TelemetryFreshMs = 1500;
         private const int TelemetryPollMs = 10;
         private const int MaxNeutralPulses = 10;
@@ -53,6 +53,12 @@ namespace DR2NeutralPlugin
             public bool Allowed;
             public string ReasonCode;
             public string Reason;
+        }
+
+        private struct GearChangeResult
+        {
+            public bool Changed;
+            public long KeyDownTimestamp;
         }
 
         private readonly SemaphoreSlim _keyGate = new SemaphoreSlim(1, 1);
@@ -455,6 +461,37 @@ namespace DR2NeutralPlugin
                    forwardGear <= 9
                 ? gearDownVirtualKey
                 : -1;
+        }
+
+        internal static int GetRemainingNeutralPulseDelayMs(
+            long previousKeyDownTimestamp,
+            long currentTimestamp,
+            long stopwatchFrequency)
+        {
+            if (previousKeyDownTimestamp <= 0)
+            {
+                return 0;
+            }
+
+            if (stopwatchFrequency <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    "stopwatchFrequency",
+                    "Stopwatch frequency must be positive.");
+            }
+
+            if (currentTimestamp < previousKeyDownTimestamp)
+            {
+                return MinimumNeutralPulseIntervalMs;
+            }
+
+            double elapsedMs =
+                (currentTimestamp - previousKeyDownTimestamp) * 1000.0 /
+                stopwatchFrequency;
+            double remainingMs = MinimumNeutralPulseIntervalMs - elapsedMs;
+            return remainingMs <= 0
+                ? 0
+                : (int)Math.Ceiling(remainingMs);
         }
 
         private void AttachPublicPropertiesAndActions()
@@ -1088,7 +1125,7 @@ namespace DR2NeutralPlugin
                     return;
                 }
 
-                bool changed = await PulseAndWaitForGearChangeAsync(
+                GearChangeResult change = await PulseAndWaitForGearChangeAsync(
                         (ushort)key,
                         before,
                         source,
@@ -1097,7 +1134,7 @@ namespace DR2NeutralPlugin
                         token)
                     .ConfigureAwait(false);
 
-                if (!changed)
+                if (!change.Changed)
                 {
                     SetLastResult(
                         StructuredLogLevel.Warning,
@@ -1114,23 +1151,19 @@ namespace DR2NeutralPlugin
                     return;
                 }
 
-                LogStructuredEvent(
-                    StructuredLogLevel.Info,
-                    "neutral.settle_started",
-                    LogField("operationId", operationId),
-                    LogField("source", source),
-                    LogField("pulse", pulse),
-                    LogField("delayMs", PostShiftSettleMs),
-                    LogField("currentGear", NormalizeGear(_currentGear)));
-                await Task.Delay(PostShiftSettleMs, token).ConfigureAwait(false);
-                LogStructuredEvent(
-                    StructuredLogLevel.Info,
-                    "neutral.settle_completed",
-                    LogField("operationId", operationId),
-                    LogField("source", source),
-                    LogField("pulse", pulse),
-                    LogField("delayMs", PostShiftSettleMs),
-                    LogField("currentGear", NormalizeGear(_currentGear)));
+                if (!string.Equals(
+                        NormalizeGear(_currentGear),
+                        "N",
+                        StringComparison.Ordinal))
+                {
+                    await WaitForNeutralPulseIntervalAsync(
+                            change.KeyDownTimestamp,
+                            source,
+                            operationId,
+                            pulse,
+                            token)
+                        .ConfigureAwait(false);
+                }
             }
 
             SetLastResult(
@@ -1145,7 +1178,7 @@ namespace DR2NeutralPlugin
                 LogField("elapsedMs", operationTimer.Elapsed.TotalMilliseconds));
         }
 
-        private async Task<bool> PulseAndWaitForGearChangeAsync(
+        private async Task<GearChangeResult> PulseAndWaitForGearChangeAsync(
             ushort virtualKey,
             string before,
             string source,
@@ -1153,7 +1186,7 @@ namespace DR2NeutralPlugin
             int pulseNumber,
             CancellationToken token)
         {
-            await PulseKeyAsync(
+            long keyDownTimestamp = await PulseKeyAsync(
                     virtualKey,
                     operationId,
                     source,
@@ -1189,7 +1222,11 @@ namespace DR2NeutralPlugin
                         LogField("beforeGear", before),
                         LogField("currentGear", NormalizeGear(_currentGear)),
                         LogField("elapsedMs", timeout.Elapsed.TotalMilliseconds));
-                    return false;
+                    return new GearChangeResult
+                    {
+                        Changed = false,
+                        KeyDownTimestamp = keyDownTimestamp
+                    };
                 }
 
                 string now = NormalizeGear(_currentGear);
@@ -1206,7 +1243,11 @@ namespace DR2NeutralPlugin
                         LogField("afterGear", now),
                         LogField("elapsedMs", timeout.Elapsed.TotalMilliseconds),
                         LogField("telemetryAgeMs", GetTelemetryAgeMs()));
-                    return true;
+                    return new GearChangeResult
+                    {
+                        Changed = true,
+                        KeyDownTimestamp = keyDownTimestamp
+                    };
                 }
 
                 await Task.Delay(TelemetryPollMs, token).ConfigureAwait(false);
@@ -1222,10 +1263,86 @@ namespace DR2NeutralPlugin
                 LogField("currentGear", NormalizeGear(_currentGear)),
                 LogField("elapsedMs", timeout.Elapsed.TotalMilliseconds),
                 LogField("telemetryAgeMs", GetTelemetryAgeMs()));
-            return false;
+            return new GearChangeResult
+            {
+                Changed = false,
+                KeyDownTimestamp = keyDownTimestamp
+            };
         }
 
-        private async Task PulseKeyAsync(
+        private async Task WaitForNeutralPulseIntervalAsync(
+            long previousKeyDownTimestamp,
+            string source,
+            long operationId,
+            int completedPulseNumber,
+            CancellationToken token)
+        {
+            long intervalCheckTimestamp = Stopwatch.GetTimestamp();
+            int delayMs = GetRemainingNeutralPulseDelayMs(
+                previousKeyDownTimestamp,
+                intervalCheckTimestamp,
+                Stopwatch.Frequency);
+            double elapsedSinceKeyDownMs = GetStopwatchElapsedMs(
+                previousKeyDownTimestamp,
+                intervalCheckTimestamp);
+
+            if (delayMs == 0)
+            {
+                LogStructuredEvent(
+                    StructuredLogLevel.Info,
+                    "neutral.inter_pulse_interval_satisfied",
+                    LogField("operationId", operationId),
+                    LogField("source", source),
+                    LogField("completedPulse", completedPulseNumber),
+                    LogField("minimumIntervalMs", MinimumNeutralPulseIntervalMs),
+                    LogField("elapsedSinceKeyDownMs", elapsedSinceKeyDownMs),
+                    LogField("currentGear", NormalizeGear(_currentGear)));
+                return;
+            }
+
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "neutral.inter_pulse_wait_started",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("completedPulse", completedPulseNumber),
+                LogField("minimumIntervalMs", MinimumNeutralPulseIntervalMs),
+                LogField("elapsedSinceKeyDownMs", elapsedSinceKeyDownMs),
+                LogField("delayMs", delayMs),
+                LogField("currentGear", NormalizeGear(_currentGear)));
+
+            Stopwatch waitTimer = Stopwatch.StartNew();
+            await Task.Delay(delayMs, token).ConfigureAwait(false);
+            double actualIntervalMs = GetStopwatchElapsedMs(
+                previousKeyDownTimestamp,
+                Stopwatch.GetTimestamp());
+            LogStructuredEvent(
+                StructuredLogLevel.Info,
+                "neutral.inter_pulse_wait_completed",
+                LogField("operationId", operationId),
+                LogField("source", source),
+                LogField("completedPulse", completedPulseNumber),
+                LogField("minimumIntervalMs", MinimumNeutralPulseIntervalMs),
+                LogField("requestedDelayMs", delayMs),
+                LogField("waitElapsedMs", waitTimer.Elapsed.TotalMilliseconds),
+                LogField("actualIntervalMs", actualIntervalMs),
+                LogField("currentGear", NormalizeGear(_currentGear)));
+        }
+
+        private static double GetStopwatchElapsedMs(
+            long startTimestamp,
+            long endTimestamp)
+        {
+            if (startTimestamp <= 0 || endTimestamp <= startTimestamp)
+            {
+                return 0;
+            }
+
+            return (endTimestamp - startTimestamp) * 1000.0 /
+                   Stopwatch.Frequency;
+        }
+
+        private async Task<long> PulseKeyAsync(
             ushort virtualKey,
             long operationId,
             string source,
@@ -1255,6 +1372,7 @@ namespace DR2NeutralPlugin
                 LogField("waitElapsedMs", gateTimer.Elapsed.TotalMilliseconds));
 
             bool keyIsDown = false;
+            long keyDownTimestamp = 0;
             Stopwatch holdTimer = null;
 
             try
@@ -1296,6 +1414,7 @@ namespace DR2NeutralPlugin
                 }
 
                 keyIsDown = true;
+                keyDownTimestamp = Stopwatch.GetTimestamp();
                 holdTimer = Stopwatch.StartNew();
                 LogStructuredEvent(
                     StructuredLogLevel.Info,
@@ -1363,6 +1482,8 @@ namespace DR2NeutralPlugin
                         LogField("totalElapsedMs", gateTimer.Elapsed.TotalMilliseconds));
                 }
             }
+
+            return keyDownTimestamp;
         }
 
         private NeutralConditionSnapshot EvaluateNeutralConditions()

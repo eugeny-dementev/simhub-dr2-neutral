@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-09
+
+- Enforced a 200 ms minimum between Neutral key-down pulses so DiRT Rally 2.0
+  does not discard rapid follow-up downshifts after unusually fast telemetry
+  confirmation.
+- Added correlated inter-pulse wait diagnostics and deterministic interval
+  calculation tests based on captured runtime failure timing.
+
 ## [1.1.0] - 2026-08-09
 
 - Added bounded JSON event logging with UTC timestamps and correlation IDs for
@@ -28,6 +36,7 @@ All notable changes to this project are documented here. The format follows
 - Added rollback-capable one-click installation and recoverable uninstall.
 - Added a reproducible .NET SDK 10 / .NET Framework 4.8 x86 build and tests.
 
-[Unreleased]: https://github.com/eugeny-dementev/simhub-dr2-neutral/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/eugeny-dementev/simhub-dr2-neutral/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/eugeny-dementev/simhub-dr2-neutral/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/eugeny-dementev/simhub-dr2-neutral/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/eugeny-dementev/simhub-dr2-neutral/releases/tag/v1.0.0

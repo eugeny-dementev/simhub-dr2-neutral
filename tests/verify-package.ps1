@@ -92,6 +92,8 @@ foreach ($expected in @(
     "pulse.key_up_sent",
     "gear_change.confirmed",
     "gear_change.timeout",
+    "neutral.inter_pulse_wait_started",
+    "neutral.inter_pulse_wait_completed",
     "DateTime.UtcNow"
 )) {
     Assert-Condition ($main.Contains($expected)) "structured runtime event: $expected"
@@ -133,6 +135,7 @@ foreach ($expected in @(
     "private const int TelemetryFreshMs = 1500;",
     "private const int MaxNeutralPulses = 10;",
     "private const int KeyHoldMs = 35;",
+    "internal const int MinimumNeutralPulseIntervalMs = 200;",
     "internal const int StableStateTimeoutMs = 10000;",
     "internal const int CaptureStepTimeoutMs = 60000;",
     "internal const int MaximumControllers = 32;",
@@ -202,7 +205,7 @@ Assert-Condition ($nuget.Contains("https://api.nuget.org/v3/index.json")) "offic
 Assert-Condition (-not $nuget.Contains('value="tools"')) "source build has no machine-local package feed"
 Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $PackageRoot "calibrate.ps1"))) "legacy external calibration removed"
 
-Assert-Condition ([string]$version.version -eq "1.1.0") "single release version manifest"
+Assert-Condition ([string]$version.version -eq "1.1.1") "single release version manifest"
 Assert-Condition ($versionCheck.Contains('Release tag $Tag does not match version')) "tag/version consistency check"
 Assert-Condition ($sdkBootstrap.Contains("D2239182E07A74B5A2B14782F256C63ACB2B4126CD75FBDF760F8A227376E895")) "pinned SimHub archive checksum"
 Assert-Condition ($sdkBootstrap.Contains("CN=Nicolas Guilbert")) "pinned SimHub Authenticode publisher"
