@@ -18,6 +18,7 @@ namespace DR2NeutralPlugin.Tests
                 TestMappedButtonEdges();
                 TestGearNormalizationAndNeutralRouting();
                 TestGameDetection();
+                TestStructuredEventFormatting();
                 TestSettingsUiConstruction();
                 TestAssemblyMetadata();
 
@@ -125,6 +126,64 @@ namespace DR2NeutralPlugin.Tests
             False(DR2Neutral.LooksLikeDirtRally2(""), "empty game rejection");
         }
 
+        private static void TestStructuredEventFormatting()
+        {
+            DateTime timestamp = new DateTime(
+                    2026,
+                    8,
+                    9,
+                    1,
+                    2,
+                    3,
+                    DateTimeKind.Utc)
+                .AddTicks(4567890);
+            string json = StructuredEventFormatter.Format(
+                timestamp,
+                "neutral.conditions_checked",
+                StructuredEventFormatter.Field("operationId", 42L),
+                StructuredEventFormatter.Field("allowed", false),
+                StructuredEventFormatter.Field("reason", "focus\"lost\nnow"),
+                StructuredEventFormatter.Field("telemetryAgeMs", 12.5));
+
+            Equal(
+                "{\"timestampUtc\":\"2026-08-09T01:02:03.4567890Z\"," +
+                "\"event\":\"neutral.conditions_checked\"," +
+                "\"operationId\":42,\"allowed\":false," +
+                "\"reason\":\"focus\\\"lost\\nnow\",\"telemetryAgeMs\":12.5}",
+                json,
+                "structured JSON is deterministic and escaped");
+
+            string longValue = new string('x', 241);
+            string bounded = StructuredEventFormatter.Format(
+                timestamp,
+                "bounded",
+                StructuredEventFormatter.Field("value", longValue));
+            True(bounded.Contains(new string('x', 240)), "structured strings keep bounded content");
+            False(bounded.Contains(new string('x', 241)), "structured strings are bounded");
+
+            string nonFinite = StructuredEventFormatter.Format(
+                timestamp,
+                "number",
+                StructuredEventFormatter.Field("value", double.NaN));
+            True(nonFinite.Contains("\"value\":null"), "non-finite JSON numbers become null");
+
+            StructuredLogField[] tooMany = new StructuredLogField[25];
+            for (int index = 0; index < tooMany.Length; index++)
+            {
+                tooMany[index] = StructuredEventFormatter.Field("field" + index, index);
+            }
+
+            Throws<ArgumentOutOfRangeException>(
+                () => StructuredEventFormatter.Format(timestamp, "bounded", tooMany),
+                "structured field count is bounded");
+            Throws<ArgumentException>(
+                () => StructuredEventFormatter.Format(
+                    timestamp,
+                    "bounded",
+                    StructuredEventFormatter.Field("invalid field", 1)),
+                "structured field names are validated");
+        }
+
         private static void TestSettingsUiConstruction()
         {
             DR2Neutral plugin = new DR2Neutral();
@@ -138,7 +197,7 @@ namespace DR2NeutralPlugin.Tests
         private static void TestAssemblyMetadata()
         {
             Assembly assembly = typeof(DR2Neutral).Assembly;
-            Equal(new Version(1, 0, 0, 0), assembly.GetName().Version, "assembly version");
+            Equal(new Version(1, 1, 0, 0), assembly.GetName().Version, "assembly version");
             Equal("DR2Neutral", assembly.GetName().Name, "assembly name");
             True(typeof(SimHub.Plugins.IWPFSettingsV2).IsAssignableFrom(typeof(DR2Neutral)), "settings interface");
         }
@@ -179,6 +238,24 @@ namespace DR2NeutralPlugin.Tests
                     "Assertion failed: " + name +
                     ". Expected '" + expected + "', actual '" + actual + "'.");
             }
+        }
+
+        private static void Throws<TException>(Action action, string name)
+            where TException : Exception
+        {
+            _assertions++;
+            try
+            {
+                action();
+            }
+            catch (TException)
+            {
+                return;
+            }
+
+            throw new InvalidOperationException(
+                "Assertion failed: " + name + ". Expected " +
+                typeof(TException).FullName + ".");
         }
     }
 }

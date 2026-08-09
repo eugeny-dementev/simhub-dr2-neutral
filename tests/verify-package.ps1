@@ -17,6 +17,7 @@ function Assert-Condition {
 $paths = @{
     Plugin = Join-Path $PackageRoot "src\bin\Release\DR2Neutral.dll"
     Main = Join-Path $PackageRoot "src\DR2NeutralPlugin.cs"
+    StructuredLogger = Join-Path $PackageRoot "src\StructuredEventFormatter.cs"
     Input = Join-Path $PackageRoot "src\ControllerInputManager.cs"
     Settings = Join-Path $PackageRoot "src\DR2NeutralSettings.cs"
     UserInterface = Join-Path $PackageRoot "src\DR2NeutralSettingsControl.cs"
@@ -62,6 +63,7 @@ foreach ($scriptPath in @(
 }
 
 $main = Get-Content -LiteralPath $paths.Main -Raw
+$structuredLogger = Get-Content -LiteralPath $paths.StructuredLogger -Raw
 $input = Get-Content -LiteralPath $paths.Input -Raw
 $settings = Get-Content -LiteralPath $paths.Settings -Raw
 $userInterface = Get-Content -LiteralPath $paths.UserInterface -Raw
@@ -81,6 +83,26 @@ Assert-Condition ($main.Contains('[PluginName("DR2 Neutral Selector")]')) "commu
 Assert-Condition ($main.Contains('get { return "DR2 Neutral"; }')) "left-menu title"
 Assert-Condition ($userInterface.Contains("Start calibration")) "built-in calibration UI"
 Assert-Condition ($userInterface.Contains("First safe test")) "in-product acceptance guidance"
+
+foreach ($expected in @(
+    "[DR2Neutral.Event]",
+    "input.button_pressed",
+    "neutral.conditions_checked",
+    "pulse.key_down_sent",
+    "pulse.key_up_sent",
+    "gear_change.confirmed",
+    "gear_change.timeout",
+    "DateTime.UtcNow"
+)) {
+    Assert-Condition ($main.Contains($expected)) "structured runtime event: $expected"
+}
+foreach ($expected in @(
+    "timestampUtc",
+    "MaximumFieldCount = 24",
+    "MaximumStringValueLength = 240"
+)) {
+    Assert-Condition ($structuredLogger.Contains($expected)) "bounded structured logger: $expected"
+}
 
 foreach ($name in @("GearUp", "GearDown", "SelectNeutral")) {
     Assert-Condition ($main.Contains('AddAction("' + $name + '"')) "unqualified action $name"
@@ -180,7 +202,7 @@ Assert-Condition ($nuget.Contains("https://api.nuget.org/v3/index.json")) "offic
 Assert-Condition (-not $nuget.Contains('value="tools"')) "source build has no machine-local package feed"
 Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $PackageRoot "calibrate.ps1"))) "legacy external calibration removed"
 
-Assert-Condition ([string]$version.version -eq "1.0.0") "single release version manifest"
+Assert-Condition ([string]$version.version -eq "1.1.0") "single release version manifest"
 Assert-Condition ($versionCheck.Contains('Release tag $Tag does not match version')) "tag/version consistency check"
 Assert-Condition ($sdkBootstrap.Contains("D2239182E07A74B5A2B14782F256C63ACB2B4126CD75FBDF760F8A227376E895")) "pinned SimHub archive checksum"
 Assert-Condition ($sdkBootstrap.Contains("CN=Nicolas Guilbert")) "pinned SimHub Authenticode publisher"
