@@ -9,7 +9,8 @@ All notable changes to this project are documented here. The format follows
 ## [1.2.0] - 2026-08-10
 
 - Added a 50–200 ms Neutral pulse interval setting to the SimHub-native plugin
-  page, with a 5 ms slider and exact whole-millisecond manual entry.
+  page, with a pointer-aware 5 ms slider, mouse-wheel and keyboard control, and
+  exact whole-millisecond manual entry.
 - Kept 200 ms as the compatibility default and transparently migrated version-1
   settings without changing keyboard bindings or controller calibration.
 - Captured timing per Neutral operation and added the configured value to public

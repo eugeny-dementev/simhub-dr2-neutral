@@ -89,6 +89,9 @@ Assert-Condition ($userInterface.Contains("IsSnapToTickEnabled = true")) "Neutra
 Assert-Condition ($userInterface.Contains("TickFrequency = 5")) "Neutral interval slider step"
 Assert-Condition ($userInterface.Contains("LargeChange = 25")) "Neutral interval slider large step"
 Assert-Condition ($userInterface.Contains("TryParseNeutralPulseInterval")) "exact manual interval parser"
+Assert-Condition ($userInterface.Contains("PreviewMouseWheel")) "Neutral interval mouse-wheel input"
+Assert-Condition ($userInterface.Contains("IsMouseOver")) "Neutral interval pointer-area guard"
+Assert-Condition ($userInterface.Contains("GetNeutralPulseIntervalAfterMouseWheel")) "bounded Neutral interval wheel calculation"
 
 foreach ($expected in @(
     "[DR2Neutral.Event]",

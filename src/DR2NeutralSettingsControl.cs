@@ -383,6 +383,7 @@ namespace DR2NeutralPlugin
                 IsSnapToTickEnabled = true,
                 AutoToolTipPlacement = System.Windows.Controls.Primitives.AutoToolTipPlacement.TopLeft,
                 AutoToolTipPrecision = 0,
+                ToolTip = "Hover and use the mouse wheel for 5 ms steps.",
                 Width = 330,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(8, 0, 8, 0)
@@ -390,6 +391,9 @@ namespace DR2NeutralPlugin
             AutomationProperties.SetName(
                 _neutralPulseIntervalSlider,
                 "Neutral pulse interval slider");
+            AutomationProperties.SetHelpText(
+                _neutralPulseIntervalSlider,
+                "Hover and use the mouse wheel for 5 millisecond steps.");
 
             _neutralPulseIntervalTextBox = new TextBox
             {
@@ -477,6 +481,8 @@ namespace DR2NeutralPlugin
             _neutralPulseIntervalSlider.ValueChanged += NeutralPulseIntervalSliderValueChanged;
             _neutralPulseIntervalSlider.PreviewMouseLeftButtonUp +=
                 NeutralPulseIntervalSliderMouseUp;
+            _neutralPulseIntervalSlider.PreviewMouseWheel +=
+                NeutralPulseIntervalSliderMouseWheel;
             _neutralPulseIntervalSlider.PreviewKeyUp += NeutralPulseIntervalSliderKeyUp;
             _neutralPulseIntervalSlider.LostKeyboardFocus +=
                 NeutralPulseIntervalSliderLostKeyboardFocus;
@@ -500,6 +506,49 @@ namespace DR2NeutralPlugin
                 DR2NeutralSettings.IsNeutralPulseIntervalValid(parsed);
             intervalMs = valid ? parsed : 0;
             return valid;
+        }
+
+        internal static int GetNeutralPulseIntervalAfterMouseWheel(
+            int currentIntervalMs,
+            int wheelDelta)
+        {
+            if (!DR2NeutralSettings.IsNeutralPulseIntervalValid(currentIntervalMs))
+            {
+                throw new ArgumentOutOfRangeException(
+                    "currentIntervalMs",
+                    "Neutral pulse interval must be from 50 through 200 ms.");
+            }
+
+            if (wheelDelta == 0)
+            {
+                return currentIntervalMs;
+            }
+
+            const int wheelStepMs = 5;
+            int minimumMs = DR2NeutralSettings.MinimumNeutralPulseIntervalMs;
+            int maximumMs = DR2NeutralSettings.MaximumNeutralPulseIntervalMs;
+            int offsetMs = currentIntervalMs - minimumMs;
+
+            if (wheelDelta > 0)
+            {
+                if (currentIntervalMs == maximumMs)
+                {
+                    return maximumMs;
+                }
+
+                int nextTick = minimumMs +
+                    ((offsetMs / wheelStepMs) + 1) * wheelStepMs;
+                return Math.Min(maximumMs, nextTick);
+            }
+
+            if (currentIntervalMs == minimumMs)
+            {
+                return minimumMs;
+            }
+
+            int previousTick = minimumMs +
+                ((offsetMs - 1) / wheelStepMs) * wheelStepMs;
+            return Math.Max(minimumMs, previousTick);
         }
 
         private bool NeutralPulseIntervalEditIsActive()
@@ -535,6 +584,28 @@ namespace DR2NeutralPlugin
             MouseButtonEventArgs e)
         {
             CommitNeutralPulseIntervalFromSlider();
+        }
+
+        private void NeutralPulseIntervalSliderMouseWheel(
+            object sender,
+            MouseWheelEventArgs e)
+        {
+            if (_refreshing ||
+                !_neutralPulseIntervalSlider.IsMouseOver ||
+                e.Delta == 0)
+            {
+                return;
+            }
+
+            int currentIntervalMs = (int)Math.Round(
+                _neutralPulseIntervalSlider.Value,
+                MidpointRounding.AwayFromZero);
+            int nextIntervalMs = GetNeutralPulseIntervalAfterMouseWheel(
+                currentIntervalMs,
+                e.Delta);
+            _neutralPulseIntervalSlider.Value = nextIntervalMs;
+            CommitNeutralPulseInterval(nextIntervalMs);
+            e.Handled = true;
         }
 
         private void NeutralPulseIntervalSliderKeyUp(object sender, KeyEventArgs e)

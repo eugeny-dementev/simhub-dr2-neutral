@@ -70,9 +70,10 @@ assignments remain active unless the complete new calibration saves successfully
 
 ### Tune Neutral pulse timing
 
-Keep **200 ms** for the most compatible behavior. To experiment, use the slider
-for 5 ms steps or type any whole number from 50 through 200. A valid change is
-saved on slider release, keyboard adjustment, Enter, or when the manual field
+Keep **200 ms** for the most compatible behavior. To experiment, drag the slider,
+hover over it and use the mouse wheel, or use the keyboard for 5 ms steps. You
+can also type any whole number from 50 through 200. A valid change is saved on
+slider release, wheel or keyboard adjustment, Enter, or when the manual field
 loses focus. It applies to the next Neutral sequence; a running sequence keeps
 the interval it captured when queued. Lower values are faster, but DiRT may
 ignore a follow-up pulse and the plugin will safely stop on telemetry timeout.

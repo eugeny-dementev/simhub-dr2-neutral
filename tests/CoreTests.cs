@@ -338,6 +338,42 @@ namespace DR2NeutralPlugin.Tests
                 slider.AutoToolTipPlacement,
                 "interval slider tooltip is enabled");
             Equal(200.0, slider.Value, "interval slider starts at default");
+            Equal(
+                "Hover and use the mouse wheel for 5 millisecond steps.",
+                AutomationProperties.GetHelpText(slider),
+                "interval slider exposes wheel help text");
+
+            Equal(
+                105,
+                DR2NeutralSettingsControl.GetNeutralPulseIntervalAfterMouseWheel(100, 120),
+                "wheel up advances one tick");
+            Equal(
+                95,
+                DR2NeutralSettingsControl.GetNeutralPulseIntervalAfterMouseWheel(100, -120),
+                "wheel down retreats one tick");
+            Equal(
+                120,
+                DR2NeutralSettingsControl.GetNeutralPulseIntervalAfterMouseWheel(117, 120),
+                "wheel up snaps an exact manual value to the next tick");
+            Equal(
+                115,
+                DR2NeutralSettingsControl.GetNeutralPulseIntervalAfterMouseWheel(117, -120),
+                "wheel down snaps an exact manual value to the previous tick");
+            Equal(
+                200,
+                DR2NeutralSettingsControl.GetNeutralPulseIntervalAfterMouseWheel(200, 120),
+                "wheel upper bound is stable");
+            Equal(
+                50,
+                DR2NeutralSettingsControl.GetNeutralPulseIntervalAfterMouseWheel(50, -120),
+                "wheel lower bound is stable");
+            Equal(
+                117,
+                DR2NeutralSettingsControl.GetNeutralPulseIntervalAfterMouseWheel(117, 0),
+                "zero wheel delta changes nothing");
+            Throws<ArgumentOutOfRangeException>(
+                () => DR2NeutralSettingsControl.GetNeutralPulseIntervalAfterMouseWheel(49, 120),
+                "wheel helper rejects an invalid current value");
 
             TextBox intervalTextBox = Descendants<TextBox>(control).Single(
                 item => AutomationProperties.GetName(item) ==
