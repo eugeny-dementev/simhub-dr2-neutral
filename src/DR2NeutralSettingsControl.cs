@@ -4,7 +4,9 @@ using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
@@ -19,6 +21,9 @@ namespace DR2NeutralPlugin
         private CheckBox _builtInInputCheckBox;
         private ComboBox _gearUpKeyComboBox;
         private ComboBox _gearDownKeyComboBox;
+        private Slider _neutralPulseIntervalSlider;
+        private TextBox _neutralPulseIntervalTextBox;
+        private TextBlock _neutralPulseIntervalStatusValue;
         private Button _calibrateButton;
         private Button _cancelCalibrationButton;
         private Button _clearCalibrationButton;
@@ -36,6 +41,8 @@ namespace DR2NeutralPlugin
         private TextBlock _lastResultValue;
         private TextBlock _localMessageValue;
         private bool _refreshing;
+        private int _lastSavedNeutralPulseIntervalMs =
+            DR2NeutralSettings.DefaultNeutralPulseIntervalMs;
 
         public DR2NeutralSettingsControl(DR2Neutral plugin)
         {
@@ -107,7 +114,7 @@ namespace DR2NeutralPlugin
             };
             page.Children.Add(safetyNotice);
 
-            page.Children.Add(CreateSectionTitle("1 · Keyboard bindings in DiRT Rally 2.0"));
+            page.Children.Add(CreateSectionTitle("1 · Shift output"));
             page.Children.Add(new TextBlock
             {
                 Text = "Under the game's Keyboard device, bind Gear Up and Gear Down to the " +
@@ -122,6 +129,7 @@ namespace DR2NeutralPlugin
             _gearDownKeyComboBox = CreateFunctionKeyComboBox();
             AddRow(keyGrid, 0, "Gear Up key", _gearUpKeyComboBox);
             AddRow(keyGrid, 1, "Gear Down key", _gearDownKeyComboBox);
+            AddRow(keyGrid, 2, "Neutral pulse interval", CreateNeutralPulseIntervalEditor());
             page.Children.Add(keyGrid);
 
             _gearUpKeyComboBox.SelectionChanged += KeySelectionChanged;
@@ -244,6 +252,10 @@ namespace DR2NeutralPlugin
                 _builtInInputCheckBox.IsChecked = settings.BuiltInControllerEnabled;
                 SelectFunctionKey(_gearUpKeyComboBox, settings.GearUpVirtualKey);
                 SelectFunctionKey(_gearDownKeyComboBox, settings.GearDownVirtualKey);
+                if (!NeutralPulseIntervalEditIsActive())
+                {
+                    SynchronizeNeutralPulseInterval(settings.NeutralPulseIntervalMs);
+                }
 
                 bool calibrated = settings.IsCalibrated;
                 bool calibrationActive = _plugin.CalibrationActive;
@@ -356,6 +368,329 @@ namespace DR2NeutralPlugin
             }
 
             return comboBox;
+        }
+
+        private FrameworkElement CreateNeutralPulseIntervalEditor()
+        {
+            _neutralPulseIntervalSlider = new Slider
+            {
+                Minimum = DR2NeutralSettings.MinimumNeutralPulseIntervalMs,
+                Maximum = DR2NeutralSettings.MaximumNeutralPulseIntervalMs,
+                Value = DR2NeutralSettings.DefaultNeutralPulseIntervalMs,
+                TickFrequency = 5,
+                SmallChange = 5,
+                LargeChange = 25,
+                IsSnapToTickEnabled = true,
+                AutoToolTipPlacement = System.Windows.Controls.Primitives.AutoToolTipPlacement.TopLeft,
+                AutoToolTipPrecision = 0,
+                Width = 330,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 8, 0)
+            };
+            AutomationProperties.SetName(
+                _neutralPulseIntervalSlider,
+                "Neutral pulse interval slider");
+
+            _neutralPulseIntervalTextBox = new TextBox
+            {
+                Text = DR2NeutralSettings.DefaultNeutralPulseIntervalMs.ToString(
+                    CultureInfo.InvariantCulture),
+                Width = 56,
+                MaxLength = 3,
+                HorizontalContentAlignment = HorizontalAlignment.Right,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(10, 0, 5, 0)
+            };
+            AutomationProperties.SetName(
+                _neutralPulseIntervalTextBox,
+                "Neutral pulse interval in milliseconds");
+
+            StackPanel controls = new StackPanel
+            {
+                Orientation = Orientation.Horizontal
+            };
+            controls.Children.Add(new TextBlock
+            {
+                Text = "50 ms",
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            controls.Children.Add(_neutralPulseIntervalSlider);
+            controls.Children.Add(new TextBlock
+            {
+                Text = "200 ms",
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            controls.Children.Add(_neutralPulseIntervalTextBox);
+            controls.Children.Add(new TextBlock
+            {
+                Text = "ms",
+                VerticalAlignment = VerticalAlignment.Center
+            });
+
+            Grid scaleLabels = new Grid
+            {
+                Width = 330,
+                Margin = new Thickness(58, 2, 0, 0)
+            };
+            scaleLabels.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            scaleLabels.ColumnDefinitions.Add(
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            TextBlock faster = new TextBlock
+            {
+                Text = "Faster",
+                Opacity = 0.65,
+                FontSize = 11
+            };
+            TextBlock compatible = new TextBlock
+            {
+                Text = "More compatible",
+                Opacity = 0.65,
+                FontSize = 11,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            Grid.SetColumn(compatible, 1);
+            scaleLabels.Children.Add(faster);
+            scaleLabels.Children.Add(compatible);
+
+            _neutralPulseIntervalStatusValue = new TextBlock
+            {
+                Text = "Saved · applies to the next Neutral sequence",
+                Margin = new Thickness(0, 3, 0, 0),
+                Opacity = 0.75,
+                TextWrapping = TextWrapping.Wrap
+            };
+
+            StackPanel editor = new StackPanel();
+            editor.Children.Add(controls);
+            editor.Children.Add(scaleLabels);
+            editor.Children.Add(new TextBlock
+            {
+                Text = "Recommended: 200 ms. Lower values shift faster, but DiRT may " +
+                       "ignore follow-up pulses.",
+                Margin = new Thickness(0, 7, 0, 0),
+                Opacity = 0.75,
+                TextWrapping = TextWrapping.Wrap
+            });
+            editor.Children.Add(_neutralPulseIntervalStatusValue);
+
+            _neutralPulseIntervalSlider.ValueChanged += NeutralPulseIntervalSliderValueChanged;
+            _neutralPulseIntervalSlider.PreviewMouseLeftButtonUp +=
+                NeutralPulseIntervalSliderMouseUp;
+            _neutralPulseIntervalSlider.PreviewKeyUp += NeutralPulseIntervalSliderKeyUp;
+            _neutralPulseIntervalSlider.LostKeyboardFocus +=
+                NeutralPulseIntervalSliderLostKeyboardFocus;
+            _neutralPulseIntervalTextBox.KeyDown += NeutralPulseIntervalTextBoxKeyDown;
+            _neutralPulseIntervalTextBox.LostKeyboardFocus +=
+                NeutralPulseIntervalTextBoxLostKeyboardFocus;
+
+            return editor;
+        }
+
+        internal static bool TryParseNeutralPulseInterval(
+            string text,
+            out int intervalMs)
+        {
+            int parsed;
+            bool valid = int.TryParse(
+                (text ?? "").Trim(),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out parsed) &&
+                DR2NeutralSettings.IsNeutralPulseIntervalValid(parsed);
+            intervalMs = valid ? parsed : 0;
+            return valid;
+        }
+
+        private bool NeutralPulseIntervalEditIsActive()
+        {
+            return (_neutralPulseIntervalSlider != null &&
+                    (_neutralPulseIntervalSlider.IsMouseCaptureWithin ||
+                     _neutralPulseIntervalSlider.IsKeyboardFocusWithin)) ||
+                   (_neutralPulseIntervalTextBox != null &&
+                    _neutralPulseIntervalTextBox.IsKeyboardFocusWithin);
+        }
+
+        private void NeutralPulseIntervalSliderValueChanged(
+            object sender,
+            RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_refreshing || _neutralPulseIntervalTextBox == null)
+            {
+                return;
+            }
+
+            int previewMs = (int)Math.Round(
+                e.NewValue,
+                MidpointRounding.AwayFromZero);
+            _neutralPulseIntervalTextBox.Text = previewMs.ToString(
+                CultureInfo.InvariantCulture);
+            SetNeutralPulseIntervalStatus(
+                "Preview · release or finish keyboard adjustment to save",
+                false);
+        }
+
+        private void NeutralPulseIntervalSliderMouseUp(
+            object sender,
+            MouseButtonEventArgs e)
+        {
+            CommitNeutralPulseIntervalFromSlider();
+        }
+
+        private void NeutralPulseIntervalSliderKeyUp(object sender, KeyEventArgs e)
+        {
+            switch (e.Key)
+            {
+                case Key.Left:
+                case Key.Right:
+                case Key.Up:
+                case Key.Down:
+                case Key.PageUp:
+                case Key.PageDown:
+                case Key.Home:
+                case Key.End:
+                    CommitNeutralPulseIntervalFromSlider();
+                    break;
+            }
+        }
+
+        private void NeutralPulseIntervalSliderLostKeyboardFocus(
+            object sender,
+            KeyboardFocusChangedEventArgs e)
+        {
+            CommitNeutralPulseIntervalFromSlider();
+        }
+
+        private void NeutralPulseIntervalTextBoxKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                CommitNeutralPulseIntervalFromText(true);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Escape)
+            {
+                RevertNeutralPulseIntervalEdit("Edit cancelled.");
+                e.Handled = true;
+            }
+        }
+
+        private void NeutralPulseIntervalTextBoxLostKeyboardFocus(
+            object sender,
+            KeyboardFocusChangedEventArgs e)
+        {
+            CommitNeutralPulseIntervalFromText(false);
+        }
+
+        private void CommitNeutralPulseIntervalFromSlider()
+        {
+            int intervalMs = (int)Math.Round(
+                _neutralPulseIntervalSlider.Value,
+                MidpointRounding.AwayFromZero);
+            CommitNeutralPulseInterval(intervalMs);
+        }
+
+        private void CommitNeutralPulseIntervalFromText(bool retainInvalidText)
+        {
+            int intervalMs;
+            if (!TryParseNeutralPulseInterval(
+                    _neutralPulseIntervalTextBox.Text,
+                    out intervalMs))
+            {
+                const string message = "Enter a whole number from 50 through 200 ms.";
+                SetLocalMessage(message);
+                SetNeutralPulseIntervalStatus(message, true);
+                if (retainInvalidText)
+                {
+                    _neutralPulseIntervalTextBox.SelectAll();
+                }
+                else
+                {
+                    SynchronizeNeutralPulseInterval(_lastSavedNeutralPulseIntervalMs);
+                }
+
+                return;
+            }
+
+            CommitNeutralPulseInterval(intervalMs);
+        }
+
+        private void CommitNeutralPulseInterval(int intervalMs)
+        {
+            DR2NeutralSettings savedSettings = _plugin.GetSettingsSnapshot();
+            if (savedSettings.NeutralPulseIntervalMs == intervalMs)
+            {
+                SynchronizeNeutralPulseInterval(intervalMs);
+                return;
+            }
+
+            string error;
+            if (!_plugin.TrySetNeutralPulseIntervalMs(intervalMs, out error))
+            {
+                DR2NeutralSettings currentSettings = _plugin.GetSettingsSnapshot();
+                SynchronizeNeutralPulseInterval(currentSettings.NeutralPulseIntervalMs);
+                SetLocalMessage(error);
+                SetNeutralPulseIntervalStatus(error, true);
+                return;
+            }
+
+            SynchronizeNeutralPulseInterval(intervalMs);
+            SetLocalMessage(
+                "Neutral pulse interval saved: " + intervalMs +
+                " ms. Applies to the next Neutral sequence.");
+        }
+
+        private void RevertNeutralPulseIntervalEdit(string message)
+        {
+            DR2NeutralSettings settings = _plugin.GetSettingsSnapshot();
+            SynchronizeNeutralPulseInterval(settings.NeutralPulseIntervalMs);
+            SetLocalMessage(message);
+        }
+
+        private void SynchronizeNeutralPulseInterval(int intervalMs)
+        {
+            bool wasRefreshing = _refreshing;
+            _refreshing = true;
+            try
+            {
+                _lastSavedNeutralPulseIntervalMs = intervalMs;
+                _neutralPulseIntervalSlider.Value = intervalMs;
+                _neutralPulseIntervalTextBox.Text = intervalMs.ToString(
+                    CultureInfo.InvariantCulture);
+                SetNeutralPulseIntervalStatus(
+                    "Saved · applies to the next Neutral sequence",
+                    false);
+            }
+            finally
+            {
+                _refreshing = wasRefreshing;
+            }
+        }
+
+        private void SetNeutralPulseIntervalStatus(string message, bool isError)
+        {
+            if (_neutralPulseIntervalStatusValue == null)
+            {
+                return;
+            }
+
+            _neutralPulseIntervalStatusValue.Text = message ?? "";
+            if (isError)
+            {
+                _neutralPulseIntervalStatusValue.Foreground = Brushes.DarkOrange;
+            }
+            else
+            {
+                _neutralPulseIntervalStatusValue.ClearValue(TextBlock.ForegroundProperty);
+            }
+        }
+
+        private void SetLocalMessage(string message)
+        {
+            if (_localMessageValue != null)
+            {
+                _localMessageValue.Text = message ?? "";
+            }
         }
 
         private static Grid CreateTwoColumnGrid()

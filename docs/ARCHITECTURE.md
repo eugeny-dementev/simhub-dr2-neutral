@@ -35,6 +35,8 @@ flowchart LR
   a known gear.
 - A key is held for 35 ms and released in a `finally` path.
 - Each shift waits at most 1000 ms for a confirmed gear change.
+- Neutral pulse spacing is bounded to 50–200 ms, defaults and migrates to
+  200 ms, and is captured once per queued operation.
 - A Neutral sequence emits no more than 10 pulses.
 - Calibration, single shifts, and Neutral sequences cannot overlap improperly.
 - Settings are committed only after a complete valid calibration.
@@ -45,3 +47,5 @@ flowchart LR
 Only documented SimHub plugin interfaces and assemblies from the installed
 SimHub distribution are referenced. The project does not redistribute them.
 The public `DR2Neutral.*` names are treated as a stable compatibility surface.
+`DR2Neutral.NeutralPulseIntervalMs` exposes the persisted global interval in
+milliseconds; it is diagnostic and read-only from SimHub profiles.

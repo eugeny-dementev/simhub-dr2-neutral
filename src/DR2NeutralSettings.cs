@@ -5,16 +5,20 @@ namespace DR2NeutralPlugin
 {
     public sealed class DR2NeutralSettings
     {
-        public const int CurrentVersion = 1;
+        public const int CurrentVersion = 2;
         public const int UnassignedButton = -1;
         public const int MaximumButtonCount = 128;
         public const int DefaultGearUpVirtualKey = 0x76;
         public const int DefaultGearDownVirtualKey = 0x77;
+        public const int MinimumNeutralPulseIntervalMs = 50;
+        public const int MaximumNeutralPulseIntervalMs = 200;
+        public const int DefaultNeutralPulseIntervalMs = 200;
 
         public int Version { get; set; }
         public bool BuiltInControllerEnabled { get; set; }
         public int GearUpVirtualKey { get; set; }
         public int GearDownVirtualKey { get; set; }
+        public int NeutralPulseIntervalMs { get; set; }
         public string ControllerInstanceGuid { get; set; }
         public string ControllerProductGuid { get; set; }
         public string ControllerName { get; set; }
@@ -28,6 +32,7 @@ namespace DR2NeutralPlugin
             BuiltInControllerEnabled = true;
             GearUpVirtualKey = DefaultGearUpVirtualKey;
             GearDownVirtualKey = DefaultGearDownVirtualKey;
+            NeutralPulseIntervalMs = DefaultNeutralPulseIntervalMs;
             ControllerInstanceGuid = "";
             ControllerProductGuid = "";
             ControllerName = "";
@@ -59,6 +64,7 @@ namespace DR2NeutralPlugin
                 BuiltInControllerEnabled = BuiltInControllerEnabled,
                 GearUpVirtualKey = GearUpVirtualKey,
                 GearDownVirtualKey = GearDownVirtualKey,
+                NeutralPulseIntervalMs = NeutralPulseIntervalMs,
                 ControllerInstanceGuid = ControllerInstanceGuid ?? "",
                 ControllerProductGuid = ControllerProductGuid ?? "",
                 ControllerName = ControllerName ?? "",
@@ -82,10 +88,30 @@ namespace DR2NeutralPlugin
         {
             string warning = "";
 
-            if (Version != CurrentVersion)
+            int sourceVersion = Version;
+            if (sourceVersion == 1)
+            {
+                // Version 1 had a fixed 200 ms interval. Preserve that behavior
+                // regardless of how the serializer initialized the new field.
+                NeutralPulseIntervalMs = DefaultNeutralPulseIntervalMs;
+                Version = CurrentVersion;
+            }
+            else if (sourceVersion != CurrentVersion)
             {
                 Version = CurrentVersion;
                 warning = "Unsupported settings version was reset.";
+            }
+
+            if (!IsNeutralPulseIntervalValid(NeutralPulseIntervalMs))
+            {
+                int corruptValue = NeutralPulseIntervalMs;
+                NeutralPulseIntervalMs = Math.Max(
+                    MinimumNeutralPulseIntervalMs,
+                    Math.Min(MaximumNeutralPulseIntervalMs, corruptValue));
+                warning = AppendWarning(
+                    warning,
+                    "Neutral pulse interval " + corruptValue +
+                    " ms was bounded to " + NeutralPulseIntervalMs + " ms.");
             }
 
             if (!IsFunctionKey(GearUpVirtualKey) ||
@@ -126,6 +152,12 @@ namespace DR2NeutralPlugin
         public static bool IsFunctionKey(int virtualKey)
         {
             return virtualKey >= 0x70 && virtualKey <= 0x7B;
+        }
+
+        public static bool IsNeutralPulseIntervalValid(int intervalMs)
+        {
+            return intervalMs >= MinimumNeutralPulseIntervalMs &&
+                   intervalMs <= MaximumNeutralPulseIntervalMs;
         }
 
         private static string BoundText(string value, int maximumLength)

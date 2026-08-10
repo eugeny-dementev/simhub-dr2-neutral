@@ -31,7 +31,9 @@ gh attestation verify .\DR2Neutral-1.0.0-SimHub.zip `
 6. Open **DR2 Neutral** in SimHub and calibrate the three controls.
 
 Running a newer installer over an existing version is supported. Calibration is
-stored in SimHub settings and is preserved across upgrades.
+stored in SimHub settings and is preserved across upgrades. Upgrading from a
+version-1 settings file keeps the configured keys, controller, button mappings,
+and built-in input state while adding the 200 ms Neutral pulse interval default.
 
 ## What the installer changes
 

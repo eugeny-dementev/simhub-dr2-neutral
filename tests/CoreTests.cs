@@ -1,6 +1,10 @@
 using DR2NeutralPlugin;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
+using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 
 namespace DR2NeutralPlugin.Tests
@@ -38,6 +42,10 @@ namespace DR2NeutralPlugin.Tests
             DR2NeutralSettings settings = new DR2NeutralSettings();
             Equal(DR2NeutralSettings.DefaultGearUpVirtualKey, settings.GearUpVirtualKey, "default up key");
             Equal(DR2NeutralSettings.DefaultGearDownVirtualKey, settings.GearDownVirtualKey, "default down key");
+            Equal(
+                DR2NeutralSettings.DefaultNeutralPulseIntervalMs,
+                settings.NeutralPulseIntervalMs,
+                "Neutral interval defaults to compatibility value");
             True(settings.BuiltInControllerEnabled, "built-in input defaults enabled");
             False(settings.IsCalibrated, "defaults are not calibrated");
 
@@ -52,7 +60,47 @@ namespace DR2NeutralPlugin.Tests
 
             DR2NeutralSettings clone = settings.Clone();
             clone.GearUpButton = 7;
+            clone.NeutralPulseIntervalMs = 117;
             Equal(1, settings.GearUpButton, "clone mutation does not affect source");
+            Equal(200, settings.NeutralPulseIntervalMs, "clone preserves independent interval");
+
+            DR2NeutralSettings versionOne = settings.Clone();
+            versionOne.Version = 1;
+            versionOne.BuiltInControllerEnabled = false;
+            versionOne.GearUpVirtualKey = 0x74;
+            versionOne.GearDownVirtualKey = 0x75;
+            versionOne.NeutralPulseIntervalMs = 50;
+            string controllerGuid = versionOne.ControllerInstanceGuid;
+            Equal("", versionOne.NormalizeAndValidate(), "version 1 migration is transparent");
+            Equal(DR2NeutralSettings.CurrentVersion, versionOne.Version, "version 1 migrates to version 2");
+            Equal(200, versionOne.NeutralPulseIntervalMs, "version 1 retains fixed 200 ms behavior");
+            False(versionOne.BuiltInControllerEnabled, "migration preserves built-in input state");
+            Equal(0x74, versionOne.GearUpVirtualKey, "migration preserves up key");
+            Equal(0x75, versionOne.GearDownVirtualKey, "migration preserves down key");
+            Equal(controllerGuid, versionOne.ControllerInstanceGuid, "migration preserves controller");
+            Equal(1, versionOne.GearUpButton, "migration preserves up button");
+            Equal(2, versionOne.GearDownButton, "migration preserves down button");
+            Equal(3, versionOne.SelectNeutralButton, "migration preserves Neutral button");
+
+            DR2NeutralSettings belowRange = new DR2NeutralSettings
+            {
+                NeutralPulseIntervalMs = 49
+            };
+            True(belowRange.NormalizeAndValidate().Contains("bounded"), "low corrupt interval warns");
+            Equal(50, belowRange.NeutralPulseIntervalMs, "low corrupt interval is bounded");
+
+            DR2NeutralSettings aboveRange = new DR2NeutralSettings
+            {
+                NeutralPulseIntervalMs = 201
+            };
+            True(aboveRange.NormalizeAndValidate().Contains("bounded"), "high corrupt interval warns");
+            Equal(200, aboveRange.NeutralPulseIntervalMs, "high corrupt interval is bounded");
+
+            DR2Neutral plugin = new DR2Neutral();
+            string intervalError;
+            False(plugin.TrySetNeutralPulseIntervalMs(49, out intervalError), "setter rejects low interval");
+            True(intervalError.Contains("50 through 200"), "setter explains interval bounds");
+            False(plugin.TrySetNeutralPulseIntervalMs(201, out intervalError), "setter rejects high interval");
 
             settings.GearDownButton = settings.GearUpButton;
             True(settings.NormalizeAndValidate().Length > 0, "duplicate calibration is rejected");
@@ -132,65 +180,80 @@ namespace DR2NeutralPlugin.Tests
             const long frequency = 1000;
             const long firstKeyDown = 1000;
 
-            Equal(
-                0,
-                DR2Neutral.GetRemainingNeutralPulseDelayMs(0, firstKeyDown, frequency),
-                "first Neutral pulse is not delayed");
-            Equal(
-                200,
-                DR2Neutral.GetRemainingNeutralPulseDelayMs(
-                    firstKeyDown,
-                    firstKeyDown,
-                    frequency),
-                "full interval remains immediately after key-down");
-            Equal(
-                150,
-                DR2Neutral.GetRemainingNeutralPulseDelayMs(
-                    firstKeyDown,
-                    firstKeyDown + 50,
-                    frequency),
-                "partial interval is calculated exactly");
-            Equal(
-                85,
-                DR2Neutral.GetRemainingNeutralPulseDelayMs(
-                    firstKeyDown,
-                    firstKeyDown + 115,
-                    frequency),
-                "observed rejected timing is extended to the safe interval");
+            foreach (int intervalMs in new[] { 50, 117, 200 })
+            {
+                Equal(
+                    0,
+                    DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                        0,
+                        firstKeyDown,
+                        frequency,
+                        intervalMs),
+                    intervalMs + " ms first pulse is not delayed");
+                Equal(
+                    intervalMs,
+                    DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                        firstKeyDown,
+                        firstKeyDown,
+                        frequency,
+                        intervalMs),
+                    intervalMs + " ms full interval remains after key-down");
+                Equal(
+                    1,
+                    DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                        firstKeyDown,
+                        firstKeyDown + intervalMs - 1,
+                        frequency,
+                        intervalMs),
+                    intervalMs + " ms remaining delay is rounded safely");
+                Equal(
+                    0,
+                    DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                        firstKeyDown,
+                        firstKeyDown + intervalMs,
+                        frequency,
+                        intervalMs),
+                    intervalMs + " ms exact interval needs no delay");
+                Equal(
+                    0,
+                    DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                        firstKeyDown,
+                        firstKeyDown + intervalMs + 40,
+                        frequency,
+                        intervalMs),
+                    intervalMs + " ms slow telemetry adds no redundant delay");
+                Equal(
+                    intervalMs,
+                    DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                        firstKeyDown,
+                        firstKeyDown - 1,
+                        frequency,
+                        intervalMs),
+                    intervalMs + " ms backward stopwatch anomaly is bounded");
+            }
+
             Equal(
                 1,
                 DR2Neutral.GetRemainingNeutralPulseDelayMs(
-                    firstKeyDown,
-                    firstKeyDown + 199,
-                    frequency),
-                "sub-millisecond remainder rounds up safely");
-            Equal(
-                0,
-                DR2Neutral.GetRemainingNeutralPulseDelayMs(
-                    firstKeyDown,
-                    firstKeyDown + 200,
-                    frequency),
-                "exact minimum interval needs no delay");
-            Equal(
-                0,
-                DR2Neutral.GetRemainingNeutralPulseDelayMs(
-                    firstKeyDown,
-                    firstKeyDown + 240,
-                    frequency),
-                "slow telemetry confirmation adds no redundant delay");
-            Equal(
-                DR2Neutral.MinimumNeutralPulseIntervalMs,
-                DR2Neutral.GetRemainingNeutralPulseDelayMs(
-                    firstKeyDown,
-                    firstKeyDown - 1,
-                    frequency),
-                "backward stopwatch anomaly uses the bounded full delay");
+                    10000,
+                    11161,
+                    10000,
+                    117),
+                "fractional remaining time rounds up safely");
             Throws<ArgumentOutOfRangeException>(
                 () => DR2Neutral.GetRemainingNeutralPulseDelayMs(
                     firstKeyDown,
                     firstKeyDown,
-                    0),
+                    0,
+                    200),
                 "invalid stopwatch frequency is rejected");
+            Throws<ArgumentOutOfRangeException>(
+                () => DR2Neutral.GetRemainingNeutralPulseDelayMs(
+                    firstKeyDown,
+                    firstKeyDown,
+                    frequency,
+                    49),
+                "invalid interval is rejected");
         }
 
         private static void TestStructuredEventFormatting()
@@ -259,12 +322,43 @@ namespace DR2NeutralPlugin.Tests
             True(scrollViewer != null, "settings UI root is scrollable");
             StackPanel page = scrollViewer == null ? null : scrollViewer.Content as StackPanel;
             True(page != null && page.Children.Count >= 10, "settings UI contains setup sections");
+
+            Slider slider = Descendants<Slider>(control).Single(
+                item => AutomationProperties.GetName(item) ==
+                        "Neutral pulse interval slider");
+            Equal(50.0, slider.Minimum, "interval slider minimum");
+            Equal(200.0, slider.Maximum, "interval slider maximum");
+            Equal(5.0, slider.TickFrequency, "interval slider tick size");
+            Equal(5.0, slider.SmallChange, "interval slider small change");
+            Equal(25.0, slider.LargeChange, "interval slider large change");
+            True(slider.IsSnapToTickEnabled, "interval slider snaps to 5 ms steps");
+            Equal(0, slider.AutoToolTipPrecision, "interval tooltip uses integers");
+            Equal(
+                System.Windows.Controls.Primitives.AutoToolTipPlacement.TopLeft,
+                slider.AutoToolTipPlacement,
+                "interval slider tooltip is enabled");
+            Equal(200.0, slider.Value, "interval slider starts at default");
+
+            TextBox intervalTextBox = Descendants<TextBox>(control).Single(
+                item => AutomationProperties.GetName(item) ==
+                        "Neutral pulse interval in milliseconds");
+            Equal("200", intervalTextBox.Text, "manual interval starts at default");
+            int parsed;
+            True(DR2NeutralSettingsControl.TryParseNeutralPulseInterval("50", out parsed), "manual minimum parses");
+            Equal(50, parsed, "manual minimum value");
+            True(DR2NeutralSettingsControl.TryParseNeutralPulseInterval("117", out parsed), "manual exact value parses");
+            Equal(117, parsed, "manual exact value");
+            True(DR2NeutralSettingsControl.TryParseNeutralPulseInterval("200", out parsed), "manual maximum parses");
+            False(DR2NeutralSettingsControl.TryParseNeutralPulseInterval("49", out parsed), "manual low value rejects");
+            False(DR2NeutralSettingsControl.TryParseNeutralPulseInterval("201", out parsed), "manual high value rejects");
+            False(DR2NeutralSettingsControl.TryParseNeutralPulseInterval("117.0", out parsed), "manual decimal rejects");
+            False(DR2NeutralSettingsControl.TryParseNeutralPulseInterval("fast", out parsed), "manual text rejects");
         }
 
         private static void TestAssemblyMetadata()
         {
             Assembly assembly = typeof(DR2Neutral).Assembly;
-            Equal(new Version(1, 1, 1, 0), assembly.GetName().Version, "assembly version");
+            Equal(new Version(1, 2, 0, 0), assembly.GetName().Version, "assembly version");
             Equal("DR2Neutral", assembly.GetName().Name, "assembly name");
             True(typeof(SimHub.Plugins.IWPFSettingsV2).IsAssignableFrom(typeof(DR2Neutral)), "settings interface");
         }
@@ -280,6 +374,35 @@ namespace DR2NeutralPlugin.Tests
                 GearDownButton = down,
                 SelectNeutralButton = neutral
             };
+        }
+
+        private static IEnumerable<T> Descendants<T>(DependencyObject root)
+            where T : DependencyObject
+        {
+            if (root == null)
+            {
+                yield break;
+            }
+
+            foreach (object child in LogicalTreeHelper.GetChildren(root))
+            {
+                DependencyObject dependencyChild = child as DependencyObject;
+                if (dependencyChild == null)
+                {
+                    continue;
+                }
+
+                T typedChild = dependencyChild as T;
+                if (typedChild != null)
+                {
+                    yield return typedChild;
+                }
+
+                foreach (T descendant in Descendants<T>(dependencyChild))
+                {
+                    yield return descendant;
+                }
+            }
         }
 
         private static void True(bool condition, string name)
