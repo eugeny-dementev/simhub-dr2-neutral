@@ -83,6 +83,15 @@ Assert-Condition ($main.Contains('[PluginName("DR2 Neutral Selector")]')) "commu
 Assert-Condition ($main.Contains('get { return "DR2 Neutral"; }')) "left-menu title"
 Assert-Condition ($userInterface.Contains("Start calibration")) "built-in calibration UI"
 Assert-Condition ($userInterface.Contains("First safe test")) "in-product acceptance guidance"
+Assert-Condition ($userInterface.Contains('CreateSectionTitle("1 · Shift output")')) "Shift output section title"
+Assert-Condition ($userInterface.Contains("Neutral pulse interval")) "Neutral interval UI"
+Assert-Condition ($userInterface.Contains("IsSnapToTickEnabled = true")) "Neutral interval slider snapping"
+Assert-Condition ($userInterface.Contains("TickFrequency = 5")) "Neutral interval slider step"
+Assert-Condition ($userInterface.Contains("LargeChange = 25")) "Neutral interval slider large step"
+Assert-Condition ($userInterface.Contains("TryParseNeutralPulseInterval")) "exact manual interval parser"
+Assert-Condition ($userInterface.Contains("PreviewMouseWheel")) "Neutral interval mouse-wheel input"
+Assert-Condition ($userInterface.Contains("IsMouseOver")) "Neutral interval pointer-area guard"
+Assert-Condition ($userInterface.Contains("GetNeutralPulseIntervalAfterMouseWheel")) "bounded Neutral interval wheel calculation"
 
 foreach ($expected in @(
     "[DR2Neutral.Event]",
@@ -94,6 +103,7 @@ foreach ($expected in @(
     "gear_change.timeout",
     "neutral.inter_pulse_wait_started",
     "neutral.inter_pulse_wait_completed",
+    "settings.neutral_pulse_interval_changed",
     "DateTime.UtcNow"
 )) {
     Assert-Condition ($main.Contains($expected)) "structured runtime event: $expected"
@@ -124,7 +134,8 @@ foreach ($name in @(
     "Calibrated",
     "ControllerName",
     "CalibrationActive",
-    "CalibrationStatus"
+    "CalibrationStatus",
+    "NeutralPulseIntervalMs"
 )) {
     Assert-Condition ($main.Contains('AttachDelegate("' + $name + '"')) "diagnostic $name"
     Assert-Condition ($readme.Contains('`DR2Neutral.' + $name + '`')) "documented diagnostic $name"
@@ -135,7 +146,10 @@ foreach ($expected in @(
     "private const int TelemetryFreshMs = 1500;",
     "private const int MaxNeutralPulses = 10;",
     "private const int KeyHoldMs = 35;",
-    "internal const int MinimumNeutralPulseIntervalMs = 200;",
+    "public const int CurrentVersion = 2;",
+    "public const int MinimumNeutralPulseIntervalMs = 50;",
+    "public const int MaximumNeutralPulseIntervalMs = 200;",
+    "public const int DefaultNeutralPulseIntervalMs = 200;",
     "internal const int StableStateTimeoutMs = 10000;",
     "internal const int CaptureStepTimeoutMs = 60000;",
     "internal const int MaximumControllers = 32;",
@@ -205,7 +219,18 @@ Assert-Condition ($nuget.Contains("https://api.nuget.org/v3/index.json")) "offic
 Assert-Condition (-not $nuget.Contains('value="tools"')) "source build has no machine-local package feed"
 Assert-Condition (-not (Test-Path -LiteralPath (Join-Path $PackageRoot "calibrate.ps1"))) "legacy external calibration removed"
 
-Assert-Condition ([string]$version.version -eq "1.1.1") "single release version manifest"
+foreach ($expected in @(
+    "int neutralPulseIntervalMs = settings.NeutralPulseIntervalMs;",
+    "GetRemainingNeutralPulseDelayMs(",
+    "LogField(`"neutralPulseIntervalMs`", neutralPulseIntervalMs)",
+    "TrySetNeutralPulseIntervalMs"
+)) {
+    Assert-Condition ($main.Contains($expected)) "captured Neutral timing behavior: $expected"
+}
+Assert-Condition ($settings.Contains("if (sourceVersion == 1)")) "version-1 timing migration"
+Assert-Condition ($settings.Contains("Math.Min(MaximumNeutralPulseIntervalMs, corruptValue)")) "corrupt interval bounding"
+
+Assert-Condition ([string]$version.version -eq "1.2.0") "single release version manifest"
 Assert-Condition ($versionCheck.Contains('Release tag $Tag does not match version')) "tag/version consistency check"
 Assert-Condition ($sdkBootstrap.Contains("D2239182E07A74B5A2B14782F256C63ACB2B4126CD75FBDF760F8A227376E895")) "pinned SimHub archive checksum"
 Assert-Condition ($sdkBootstrap.Contains("CN=Nicolas Guilbert")) "pinned SimHub Authenticode publisher"

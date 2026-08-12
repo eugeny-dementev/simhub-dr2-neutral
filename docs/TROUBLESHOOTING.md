@@ -31,11 +31,21 @@ that case: `neutral.conditions_checked` has `"allowed":true`,
 `pulse.key_down_sent` and `pulse.key_up_sent` appear, and then
 `gear_change.timeout` reports that telemetry never changed.
 
-Version 1.1.1 and newer also enforce at least 200 ms between Neutral key-down
-pulses. The trace records `neutral.inter_pulse_wait_started` and
-`neutral.inter_pulse_wait_completed`, including the requested delay and actual
-key-down interval. This prevents fast telemetry confirmation from making the
-next pulse arrive inside DiRT's input cooldown.
+Version 1.2.0 uses the **Neutral pulse interval** selected on the plugin page.
+Keep the recommended 200 ms when diagnosing missed shifts. Values from 50 to
+199 ms are experimental: they can be useful for faster shifting, but some cars
+or situations may make DiRT ignore a follow-up pulse. The trace records
+`neutral.inter_pulse_wait_started` and `neutral.inter_pulse_wait_completed`,
+including `neutralPulseIntervalMs`, requested delay, and actual key-down
+interval. The value is captured when the sequence is queued, so changing the UI
+does not alter an operation already running.
+
+## Neutral pulse interval will not save
+
+Enter a whole number from 50 through 200. Decimal values and text are rejected.
+Enter keeps invalid text selected so it can be corrected; leaving the field or
+pressing Escape restores the last saved value. A storage failure also restores
+both controls and appears in the page status and structured log.
 
 ## Collect a structured event trace
 
@@ -52,6 +62,8 @@ from `input.button_pressed` through `neutral.conditions_checked`,
 `pulse.key_down_sent`, `pulse.key_up_sent`, and either
 `gear_change.confirmed` or `gear_change.timeout`. Rejections include a stable
 `reason` code. The logger intentionally omits the repeated 10 ms poll samples.
+It also omits slider previews and writes
+`settings.neutral_pulse_interval_changed` only after a successful save.
 
 Attach only the relevant lines to a bug report after removing usernames or
 unrelated paths. The JSON fields are bounded to keep traces manageable.
